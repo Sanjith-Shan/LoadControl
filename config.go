@@ -39,6 +39,8 @@ import (
 //	PER_TRY_TIMEOUT_MS  per-attempt timeout (0 = none)
 //	BACKOFF_MS       initial backoff (default 0)
 //	THROTTLE         off | K (e.g. 2)
+//	THROTTLE_WINDOW_S   throttle history (default 120)
+//	THROTTLE_FAILURES   on: count timeouts and other retryable failures as rejections
 type Env struct {
 	Service string
 	Lookup  func(string) (string, bool)
@@ -192,6 +194,7 @@ func (e Env) ClientConfig(target string, m *Metrics) (ClientConfig, error) {
 			return cfg, fmt.Errorf("LC_THROTTLE %q: %v", k, err)
 		}
 		cfg.Throttle = throttle.New(f, time.Duration(e.num("THROTTLE_WINDOW_S", 120))*time.Second, nil)
+		cfg.ThrottleOnFailure = e.on("THROTTLE_FAILURES")
 	}
 	return cfg, nil
 }

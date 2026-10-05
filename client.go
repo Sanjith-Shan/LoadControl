@@ -16,6 +16,11 @@ type ClientConfig struct {
 
 	// Throttle is the SRE client-side adaptive throttle. Nil disables it.
 	Throttle *throttle.Throttle
+	// ThrottleOnFailure counts every retryable failure (timeouts,
+	// unavailable), not only overload rejections, as "not accepted". This
+	// lets the throttle work without server-side shedding, the way proxy
+	// admission-control filters apply the same formula.
+	ThrottleOnFailure bool
 	// Budget gates retries. Nil means no retries at all.
 	Budget retry.Budgeter
 	// MaxAttempts is the total attempts per call including the first.
@@ -100,7 +105,7 @@ func (c *Client) Do(ctx context.Context, try func(ctx context.Context, attempt i
 			}
 			return nil
 		}
-		if cfg.Throttle != nil && !last.Overloaded {
+		if cfg.Throttle != nil && !last.Overloaded && !(cfg.ThrottleOnFailure && last.Retryable) {
 			cfg.Throttle.Accepted()
 		}
 		// gRFC A6: only retryable failures drain the bucket; other

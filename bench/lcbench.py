@@ -31,6 +31,8 @@ SERVICES = ["frontend", "search", "geo", "rate", "profile", "recommendation", "u
 LOCK = "/tmp/BENCH_LOCK"
 ME = "loadcontrol"
 PROM = "http://localhost:9090"
+PLATFORM = os.environ.get("LC_PLATFORM", "compose")  # compose | k8s
+KUBECTL = os.environ.get("KUBECTL", "kubectl")
 TOXI = "http://localhost:8474"
 
 
@@ -48,7 +50,23 @@ def http(method, url, body=None, timeout=5):
         return r.read().decode()
 
 
+YIELD_FILE = "/tmp/LC_LAST_YIELD"
+BATCH_S = int(os.environ.get("LC_BATCH_S", "2400"))  # run at most this long before yielding
+YIELD_S = int(os.environ.get("LC_YIELD_S", "200"))  # free window left for the peer session
+
+
 def lock():
+    # Take turns with the peer session sharing the machine: after BATCH_S of
+    # back-to-back runs, leave the lock free for YIELD_S so it can start a job.
+    try:
+        last = float(open(YIELD_FILE).read())
+    except (FileNotFoundError, ValueError):
+        last = time.time()
+        open(YIELD_FILE, "w").write(str(last))
+    if time.time() - last > BATCH_S:
+        print(f"yielding the bench lock for {YIELD_S} s", file=sys.stderr)
+        time.sleep(YIELD_S)
+        open(YIELD_FILE, "w").write(str(time.time()))
     while True:
         try:
             fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -63,7 +81,8 @@ def lock():
                     os.remove(LOCK)  # stale lock from a crashed run of ours
                     continue
             print(f"waiting for bench lock held by: {owner}", file=sys.stderr)
-            time.sleep(30)
+            time.sleep(15)
+            open(YIELD_FILE, "w").write(str(time.time()))  # the peer had its turn
 
 
 def unlock():
@@ -105,13 +124,41 @@ def windows_cpu():
 def restarts():
     out = {}
     for s in SERVICES:
-        v = sh(f"docker inspect lchotel-{s}-1 --format '{{{{.RestartCount}}}}'", check=False)
+        if PLATFORM == "k8s":
+            v = sh(f"{KUBECTL} get pods -l app={s} -o jsonpath='{{.items[0].status.containerStatuses[0].restartCount}}'", check=False)
+        else:
+            v = sh(f"docker inspect lchotel-{s}-1 --format '{{{{.RestartCount}}}}'", check=False)
         out[s] = int(v) if v.isdigit() else None
     return out
 
 
+def kexec(deploy, cmd):
+    return sh(f"{KUBECTL} exec deploy/{deploy} -- {cmd}", check=False)
+
+
+def recreate(env_file):
+    if PLATFORM == "k8s":
+        sh(f"{KUBECTL} create configmap lc-env --from-env-file={env_file} --dry-run=client -o yaml | {KUBECTL} apply -f -")
+        sh(f"{KUBECTL} rollout restart deploy " + " ".join(SERVICES))
+        for s in SERVICES:
+            sh(f"{KUBECTL} rollout status deploy/{s} --timeout=180s")
+    else:
+        compose("up -d --force-recreate --no-deps " + " ".join(SERVICES), env_file)
+
+
+def reset_db():
+    if PLATFORM == "k8s":
+        js = ("db.adminCommand({listDatabases:1}).databases.filter(d=>![\"admin\",\"config\",\"local\"].includes(d.name))"
+              ".forEach(d=>db.getSiblingDB(d.name).dropDatabase())")
+        for m in ["geo", "profile", "rate", "recommendation", "reservation", "user"]:
+            kexec(f"mongodb-{m}", f"mongo --quiet --eval '{js}'")
+    else:
+        sh(f"bash {REPO}/bench/scripts/reset_db.sh", check=False)
+
+
 def load_snapshot():
-    others = [n for n in sh("docker ps --format '{{.Names}}'", check=False).splitlines() if n and not n.startswith("lchotel-")]
+    others = [n for n in sh("docker ps --format '{{.Names}}'", check=False).splitlines()
+              if n and not n.startswith("lchotel-") and not n.startswith("k3d-lc")]
     procs = []
     for line in sh("ps -eo pcpu,comm --sort=-pcpu --no-headers", check=False).splitlines()[:12]:
         p, c = line.split(None, 1)
@@ -172,7 +219,11 @@ def reset_faults():
 
 
 def flush(cache):
-    sh(f"docker exec lchotel-memcached-{cache}-1 bash -c 'exec 3<>/dev/tcp/127.0.0.1/11211; printf \"flush_all\\r\\n\" >&3; head -c 4 <&3'", check=False)
+    c = "bash -c 'exec 3<>/dev/tcp/127.0.0.1/11211; printf \"flush_all\\r\\n\" >&3; head -c 4 <&3'"
+    if PLATFORM == "k8s":
+        kexec(f"memcached-{cache}", c)
+    else:
+        sh(f"docker exec lchotel-memcached-{cache}-1 {c}", check=False)
 
 
 def apply_fault(spec):
@@ -249,15 +300,15 @@ def main():
     lock()
     try:
         reset_faults()
-        for s in SERVICES:
-            sh(f"docker update --cpus 0 lchotel-{s}-1", check=False)
         if not a.keep:
-            compose("up -d --force-recreate --no-deps " + " ".join(SERVICES), a.env)
+            reset_db()
+            recreate(a.env)
         if not healthy():
             raise RuntimeError("stack not healthy")
         # Prometheus keeps connections to old container IPs after a
         # recreate and would scrape the wrong service; restart it.
-        sh("docker restart lchotel-prometheus-1")
+        if PLATFORM == "compose":
+            sh("docker restart lchotel-prometheus-1")
         for _ in range(60):
             try:
                 http("GET", f"{PROM}/-/ready")
@@ -314,7 +365,7 @@ def main():
                "rate": a.rate, "schedule": a.schedule, "duration_s": a.duration, "faults": timeline,
                "summary": summary, "series": series, "prometheus": prom,
                "restarts": {k: (r1[k] - r0[k]) if None not in (r1[k], r0[k]) else None for k in r0},
-               "machine": machine(), "load": {"before": before, "mid": mid, "after": after,
+               "machine": dict(machine(), platform=PLATFORM), "load": {"before": before, "mid": mid, "after": after,
                                              "wsl_cpu_pct_per_s": mon.samples}, "note": a.note}
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
         with open(a.out, "a") as f:

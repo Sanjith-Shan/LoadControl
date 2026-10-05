@@ -128,6 +128,7 @@ type sec struct {
 	tierDone [8][numOutcomes]int64
 	lat      []float64 // ms, successful requests completing in this second
 	tierLat  [8][]float64
+	kindLat  [numKinds][]float64
 	lateSend int64 // attempts sent more than 10 ms after their intended time
 }
 
@@ -301,6 +302,7 @@ func main() {
 	var all [numOutcomes]int64
 	var tierAll [8][numOutcomes]int64
 	var tierLat [8][]float64
+	var kindLat [numKinds][]float64
 	var lat []float64
 	var attempts, retriesSent, offered, late int64
 	for i, s := range st.secs {
@@ -324,6 +326,9 @@ func main() {
 		}
 		row["tiers"] = tiersRow
 		lat = append(lat, s.lat...)
+		for k := range kindLat {
+			kindLat[k] = append(kindLat[k], s.kindLat[k]...)
+		}
 		attempts += s.attempts
 		retriesSent += s.retries
 		offered += s.offered
@@ -355,7 +360,25 @@ func main() {
 		tsum[strconv.Itoa(t)] = m
 	}
 	sum["tiers_summary"] = tsum
+	ksum := map[string]any{}
+	for k := range kindLat {
+		ksum[kindNames[k]] = map[string]any{"n": len(kindLat[k]), "mean_ms": nanToNil(mean(kindLat[k])),
+			"p50_ms": nanToNil(percentile(kindLat[k], 50)), "p99_ms": nanToNil(percentile(kindLat[k], 99))}
+	}
+	sum["kinds_summary"] = ksum
+	sum["mean_ms"] = nanToNil(mean(lat))
 	enc.Encode(sum)
+}
+
+func mean(xs []float64) float64 {
+	if len(xs) == 0 {
+		return math.NaN()
+	}
+	t := 0.0
+	for _, x := range xs {
+		t += x
+	}
+	return t / float64(len(xs))
 }
 
 func nanToNil(f float64) any {
@@ -365,7 +388,7 @@ func nanToNil(f float64) any {
 	return math.Round(f*1000) / 1000
 }
 
-func userRequest(client *http.Client, cfg config, st *stats, start, intended time.Time, _ kind, method, url string, tier, user int, jit uint64) {
+func userRequest(client *http.Client, cfg config, st *stats, start, intended time.Time, k kind, method, url string, tier, user int, jit uint64) {
 	sendAt := intended
 	result := oError
 	for attempt := 0; ; attempt++ {
@@ -454,6 +477,7 @@ func userRequest(client *http.Client, cfg config, st *stats, start, intended tim
 	if result == oGood || result == oSlow {
 		ms := float64(done.Sub(intended).Microseconds()) / 1000
 		s.lat = append(s.lat, ms)
+		s.kindLat[k] = append(s.kindLat[k], ms)
 		if tier < 8 {
 			s.tierLat[tier] = append(s.tierLat[tier], ms)
 		}

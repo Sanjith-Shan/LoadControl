@@ -1,0 +1,354 @@
+{
+ "title": "LoadControl",
+ "uid": "loadcontrol",
+ "schemaVersion": 39,
+ "refresh": "5s",
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "type": "timeseries",
+   "title": "Frontend completions within 500 ms (goodput proxy) vs admitted",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(rate(lc_server_latency_seconds_bucket{service=\"frontend\",le=\"0.5\"}[5s]))",
+     "legendFormat": "within 500 ms"
+    },
+    {
+     "refId": "B",
+     "expr": "sum(rate(lc_requests_total{service=\"frontend\",outcome=\"admitted\"}[5s]))",
+     "legendFormat": "admitted"
+    },
+    {
+     "refId": "C",
+     "expr": "sum(rate(lc_inbound_total{service=\"frontend\"}[5s]))",
+     "legendFormat": "received"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Shed rate per tier and reason (frontend)",
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (tier,outcome) (rate(lc_requests_total{service=\"frontend\",outcome=~\"shed_.*\"}[5s]))",
+     "legendFormat": "tier {{tier}} {{outcome}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Concurrency limit per service",
+   "gridPos": {
+    "x": 0,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "lc_limit",
+     "legendFormat": "{{service}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "In flight per service",
+   "gridPos": {
+    "x": 12,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "lc_inflight",
+     "legendFormat": "{{service}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Retry rate per hop (attempts that are retries)",
+   "gridPos": {
+    "x": 0,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (service,target) (rate(lc_client_attempts_total{kind=\"retry\"}[5s]))",
+     "legendFormat": "{{service}} -> {{target}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Inbound requests per service, originals and retries",
+   "gridPos": {
+    "x": 12,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (service,kind) (rate(lc_inbound_total[5s]))",
+     "legendFormat": "{{service}} {{kind}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "p99 latency of admitted requests per tier (frontend)",
+   "gridPos": {
+    "x": 0,
+    "y": 24,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.99, sum by (le,tier) (rate(lc_server_latency_seconds_bucket{service=\"frontend\"}[10s])))",
+     "legendFormat": "tier {{tier}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Limiter queue wait p99",
+   "gridPos": {
+    "x": 12,
+    "y": 24,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.99, sum by (le,service) (rate(lc_queue_wait_seconds_bucket[10s])))",
+     "legendFormat": "{{service}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Retry budget tokens",
+   "gridPos": {
+    "x": 0,
+    "y": 32,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "lc_retry_tokens",
+     "legendFormat": "{{service}} -> {{target}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Client throttle reject probability and local rejections",
+   "gridPos": {
+    "x": 12,
+    "y": 32,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "lc_throttle_probability",
+     "legendFormat": "p {{service}} -> {{target}}"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (service,target,reason) (rate(lc_client_local_total[5s]))",
+     "legendFormat": "{{reason}} {{service}} -> {{target}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "DAGOR admission level (compound key; 383 = admit all)",
+   "gridPos": {
+    "x": 0,
+    "y": 40,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "lc_dagor_level",
+     "legendFormat": "{{service}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "CPU per Go service process",
+   "gridPos": {
+    "x": 12,
+    "y": 40,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "rate(process_cpu_seconds_total[5s])",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  }
+ ],
+ "tags": [
+  "loadcontrol"
+ ]
+}
