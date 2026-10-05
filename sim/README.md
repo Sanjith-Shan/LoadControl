@@ -182,8 +182,8 @@ these are model behaviors, not results):
   recover, with or without a per-hop retry budget; honoring the one-layer
   marker at the user (with `ONE_LAYER=on`) recovers in 1 s even without a
   limiter; Gradient2 on every service with deadline drop recovers at once
-  with naive or budgeted retries alike, whatever the user retry
-  policy. Per-hop naive retries alone recover 15 s (0.7x) and 33 s (0.8x)
+  with naive or budgeted per-hop retries alike (user retries on).
+  Per-hop naive retries alone recover 15 s (0.7x) and 33 s (0.8x)
   after the trigger and not within 70 s at 0.9x. Under `cpu=fcfs` per-hop
   retries alone never recover at 0.7x. So whether the real system needs
   client retries to stay down depends on how CPU is shared, which

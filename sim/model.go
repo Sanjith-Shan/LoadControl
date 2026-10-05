@@ -409,8 +409,8 @@ func (s *Sim) onReply(k *call, n int, r reply) {
 	if cfg.Throttle != nil && !(r.shed != "" && r.shed != "deadline") {
 		cfg.Throttle.Accepted()
 	}
-	if cfg.Budget != nil {
-		cfg.Budget.OnResult(retryable)
+	if cfg.Budget != nil && retryable { // gRFC A6: other failures leave the bucket alone
+		cfg.Budget.OnResult(true)
 	}
 	if !retryable || n >= cfg.MaxAttempts || cfg.Budget == nil || e.c.err != OK {
 		s.endCall(k)
