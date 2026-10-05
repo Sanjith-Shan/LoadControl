@@ -220,11 +220,11 @@ rate or schedule, duration, fault timeline, and the user flags parsed from
 100 req/s is simulated and not reported. It runs with the loadgen's seed
 and writes measured against simulated per run: offered, good, slow, shed,
 error and timeout per second, and for runs with faults the recovery time
-computed exactly as `bench/numbers.py` `recovery()` does, on both series.
+computed exactly as `bench/lcnumbers.py` `recovery()` does, on both series.
 One parameter set for every run; nothing is tuned per run.
 
 Contaminated runs are written but flagged (`contaminated`) and left out of
-the error statistics, by the rule of `bench/numbers.py` `clean()`: a peer
+the error statistics, by the rule of `bench/lcnumbers.py` `clean()`: a peer
 lock before, during or after the run, a service restart, or Windows CPU at
 90% or more just before or after it. `-exclude exp/name[@time-prefix],...`
 flags more by hand. To rerun over whatever exists:

@@ -6,3 +6,4 @@ build/
 .minipc-busy
 .minipc-runs/
 BUILD_BRIEF*.md
+__pycache__/

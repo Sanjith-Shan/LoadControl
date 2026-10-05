@@ -56,6 +56,8 @@ YIELD_S = int(os.environ.get("LC_YIELD_S", "200"))  # free window left for the p
 
 
 def lock():
+    if os.environ.get("LC_LOCK_HELD"):
+        return  # a wrapper (scripts/with_lock.sh) already holds it
     # Take turns with the peer session sharing the machine: after BATCH_S of
     # back-to-back runs, leave the lock free for YIELD_S so it can start a job.
     try:
@@ -86,6 +88,8 @@ def lock():
 
 
 def unlock():
+    if os.environ.get("LC_LOCK_HELD"):
+        return
     try:
         if open(LOCK).read().startswith(ME):
             os.remove(LOCK)

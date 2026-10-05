@@ -129,10 +129,19 @@ TRIGGER = (f"{TRIGGER_ON}s=flush:rate,{TRIGGER_ON}s=flush:profile,{TRIGGER_ON}s=
 USER_RETRIES = "-retries 3 -timeout 1s"
 
 
+TRIGGER_MEMC = (f"{TRIGGER_ON}s=flush:rate,{TRIGGER_ON}s=flush:profile,{TRIGGER_ON}s=flush:reserve,"
+                f"{TRIGGER_ON}s=latency:memc-rate:{{ms}},{TRIGGER_ON}s=latency:memc-profile:{{ms}},"
+                f"{TRIGGER_ON}s=latency:memc-reserve:{{ms}},{TRIGGER_OFF}s=clear")
+TRIGGER_HOG = f"{TRIGGER_ON}s=hog:1,{TRIGGER_OFF}s=clear"
+
+
 def exp3(a):
     out = a.out or os.path.join(REPO, "results", "exp3_metastable.jsonl")
     x = a.x or 0.7
-    faults = TRIGGER.format(ms=a.slow_ms)
+    # mongo: cold caches + slow database (too weak to tip this system, kept
+    # as data); memc: cold caches + slow cache tier; hog: a noisy neighbour
+    # takes one of the two vCPUs.
+    faults = {"mongo": TRIGGER, "memc": TRIGGER_MEMC, "hog": TRIGGER_HOG}[a.trigger].format(ms=a.slow_ms)
     cfgs = {
         "off-userretry": ({}, "no control; users retry 3 times on timeout or error"),
         "naive-userretry": (NAIVE, "naive retries at every hop (3 attempts, per-try timeouts); users retry 3 times"),
@@ -149,8 +158,9 @@ def exp3(a):
             # Ramp up over 15 s: starting cold at full rate with user retries
             # can tip the system into the bad state before the trigger.
             ramp = f"0s:{r // 4},5s:{r // 2},10s:{3 * r // 4},15s:{r}"
-            run("exp3", f"{name}-{x}x", env, c, out, schedule=ramp, duration=150, faults=f,
-                loadgen=USER_RETRIES, note=f"rep {rep}; trigger {TRIGGER_ON}-{TRIGGER_OFF}s: cold caches + mongo +{a.slow_ms} ms")
+            tag = "" if a.trigger == "mongo" else f"-{a.trigger}"
+            run("exp3", f"{name}-{x}x{tag}", env, c, out, schedule=ramp, duration=150, faults=f,
+                loadgen=USER_RETRIES, note=f"rep {rep}; trigger {a.trigger} {TRIGGER_ON}-{TRIGGER_OFF}s ({a.slow_ms} ms)")
 
 
 def exp4(a):
@@ -262,6 +272,7 @@ def main():
     ap.add_argument("--only", default="")
     ap.add_argument("--x", type=float, default=0)
     ap.add_argument("--slow-ms", type=int, default=100)
+    ap.add_argument("--trigger", default="mongo", choices=["mongo", "memc", "hog"])
     ap.add_argument("--loads", default="", help="override load multiples, e.g. 3,4")
     ap.add_argument("--ns", default="", help="static limits for exp_conc_sweep")
     ap.add_argument("--out", default="", help="override the results file")

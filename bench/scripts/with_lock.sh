@@ -6,4 +6,4 @@ until (set -o noclobber; echo "loadcontrol $$ $(date +%FT%T) $*" > "$LOCK") 2>/d
   sleep 15
 done
 trap '[ "$(cut -d" " -f1 "$LOCK" 2>/dev/null)" = loadcontrol ] && rm -f "$LOCK"' EXIT
-"$@"
+LC_LOCK_HELD=1 "$@"

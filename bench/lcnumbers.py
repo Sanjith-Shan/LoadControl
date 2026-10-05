@@ -3,7 +3,7 @@
 tables (the source for NUMBERS.md). Nothing here is typed in by hand: each
 figure names the file and run names it came from.
 
-  python bench/numbers.py [--cap N]
+  python bench/lcnumbers.py [--cap N]
 """
 import argparse
 import glob
@@ -22,6 +22,11 @@ def load(name):
     if not os.path.exists(p):
         return []
     return [json.loads(l) for l in open(p)]
+
+
+def smean(xs):
+    xs = [x for x in xs if x is not None and not (isinstance(x, float) and math.isnan(x))]
+    return st.mean(xs) if xs else float("nan")
 
 
 def good_rate(r):
@@ -88,17 +93,17 @@ def table(file, title, cap, extra=None):
         gr = [good_rate(r) for r in rs]
         s = [r["summary"] for r in rs]
         t0 = [x.get("tiers_summary", {}).get("0", {}) for x in s]
-        print(f"| {name} | {len(rs)} | {fmt(st.mean(gr))} | {fmt(100 * st.mean(gr) / cap) if cap else 'n/a'} | "
+        print(f"| {name} | {len(rs)} | {fmt(smean(gr))} | {fmt(100 * smean(gr) / cap) if cap else 'n/a'} | "
               f"{sum(x['shed'] for x in s) // len(s)} | {sum(x['error'] for x in s) // len(s)} | {sum(x['timeout'] for x in s) // len(s)} | "
-              f"{fmt(st.mean(x['p50_ms'] for x in s if x['p50_ms'] is not None))} | "
-              f"{fmt(st.mean(x['p99_ms'] for x in s if x['p99_ms'] is not None))} | "
-              f"{fmt(st.mean(t['p99_ms'] for t in t0 if t.get('p99_ms') is not None))} | "
-              f"{fmt(st.mean(t.get('success_rate', float('nan')) for t in t0), 3)} | "
-              f"{fmt(st.mean(cpu(r) for r in rs), 0)} | {sum(clean(r) for r in rs)}/{len(rs)} |")
+              f"{fmt(smean(x['p50_ms'] for x in s if x['p50_ms'] is not None))} | "
+              f"{fmt(smean(x['p99_ms'] for x in s if x['p99_ms'] is not None))} | "
+              f"{fmt(smean(t['p99_ms'] for t in t0 if t.get('p99_ms') is not None))} | "
+              f"{fmt(smean(t.get('success_rate', float('nan')) for t in t0), 3)} | "
+              f"{fmt(smean(cpu(r) for r in rs), 0)} | {sum(clean(r) for r in rs)}/{len(rs)} |")
     print()
 
 
-def recovery(r, base_from=10, on=30, off=50, frac=0.9, hold=10):
+def recovery(r, base_from=20, on=30, off=50, frac=0.9, hold=10):
     """Seconds after the trigger is removed until goodput (per completion
     second) stays at >= frac of the pre-trigger mean for `hold` seconds.
     None if it never does before the run ends."""
