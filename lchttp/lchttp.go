@@ -90,6 +90,13 @@ func Middleware(s *lc.Server, next http.Handler) http.Handler {
 			}
 		}
 		info := infoFromRequest(r)
+		if s != nil && s.Config().Metrics != nil {
+			kind := "original"
+			if v := r.Header.Get(retry.AttemptHeader); v != "" && v != "1" {
+				kind = "retry"
+			}
+			s.Config().Metrics.Inbound.WithLabelValues(s.Config().Name, kind).Inc()
+		}
 		if s == nil {
 			next.ServeHTTP(w, r.WithContext(priority.WithInfo(ctx, info)))
 			return
@@ -164,7 +171,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			resp.Body.Close()
 			resp = nil
 		}
-		r := req.Clone(actx)
+		var body io.ReadCloser
 		if n > 1 && req.Body != nil {
 			if req.GetBody == nil {
 				return lc.Attempt{Err: errors.New("lchttp: body not replayable")}
@@ -173,13 +180,23 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if err != nil {
 				return lc.Attempt{Err: err}
 			}
-			r.Body = b
+			body = b
+		}
+		// actx is cancelled as soon as this attempt returns, which would cut
+		// off the body of the response handed to the caller. Send on a
+		// context with the same deadline that ends when the body is closed.
+		rctx, cancel := attemptContext(ctx, actx)
+		r := req.Clone(rctx)
+		if body != nil {
+			r.Body = body
 		}
 		prep(r, n)
 		res, err := t.base().RoundTrip(r)
 		if err != nil {
+			cancel()
 			return lc.Attempt{Err: err, Retryable: ctx.Err() == nil}
 		}
+		res.Body = &cancelBody{res.Body, cancel}
 		resp = res
 		if res.StatusCode < 500 && res.StatusCode != http.StatusTooManyRequests {
 			return lc.Attempt{}
@@ -207,4 +224,23 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, nil
 	}
 	return nil, err
+}
+
+func attemptContext(ctx, actx context.Context) (context.Context, context.CancelFunc) {
+	if dl, ok := actx.Deadline(); ok {
+		return context.WithDeadline(ctx, dl)
+	}
+	return context.WithCancel(ctx)
+}
+
+// cancelBody ends an attempt's context when its response body is closed.
+type cancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }

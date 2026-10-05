@@ -39,10 +39,10 @@ var ErrThrottled = errors.New("loadcontrol: rejected locally by adaptive throttl
 // Attempt is what a transport adapter reports about one try.
 type Attempt struct {
 	Err        error
-	Retryable  bool          // transport-level judgement: overload, unavailable, timeout
-	Overloaded bool          // the callee rejected for overload (does not count as an accept)
-	NoRetry    bool          // callee marked the failure "do not retry"
-	Pushback   string        // raw pushback header value, if any
+	Retryable  bool   // transport-level judgement: overload, unavailable, timeout
+	Overloaded bool   // the callee rejected for overload (does not count as an accept)
+	NoRetry    bool   // callee marked the failure "do not retry"
+	Pushback   string // raw pushback header value, if any
 }
 
 // Client runs the attempt loop for calls to one target.
@@ -103,8 +103,10 @@ func (c *Client) Do(ctx context.Context, try func(ctx context.Context, attempt i
 		if cfg.Throttle != nil && !last.Overloaded {
 			cfg.Throttle.Accepted()
 		}
-		if cfg.Budget != nil {
-			cfg.Budget.OnResult(last.Retryable)
+		// gRFC A6: only retryable failures drain the bucket; other
+		// failures leave it unchanged.
+		if cfg.Budget != nil && last.Retryable {
+			cfg.Budget.OnResult(true)
 		}
 		if m != nil {
 			if b, ok := cfg.Budget.(*retry.Budget); ok {

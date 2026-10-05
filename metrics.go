@@ -20,6 +20,7 @@ type Metrics struct {
 	ClientFailures *prometheus.CounterVec   // service, target
 	RetryTokens    *prometheus.GaugeVec     // service, target
 	ThrottleProb   *prometheus.GaugeVec     // service, target
+	Inbound        *prometheus.CounterVec   // service, kind (original|retry): requests received, before admission
 }
 
 var (
@@ -55,10 +56,12 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help: "Outbound calls that failed after all attempts."}, []string{"service", "target"}),
 		RetryTokens:  prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "lc_retry_tokens", Help: "Retry budget tokens."}, []string{"service", "target"}),
 		ThrottleProb: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "lc_throttle_probability", Help: "Client adaptive throttle reject probability."}, []string{"service", "target"}),
+		Inbound: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "lc_inbound_total",
+			Help: "Requests received by kind, before admission."}, []string{"service", "kind"}),
 	}
 	if reg != nil {
 		reg.MustRegister(m.Requests, m.Latency, m.QueueWait, m.Limit, m.Inflight, m.DagorLevel,
-			m.ClientAttempts, m.ClientLocal, m.ClientFailures, m.RetryTokens, m.ThrottleProb)
+			m.ClientAttempts, m.ClientLocal, m.ClientFailures, m.RetryTokens, m.ThrottleProb, m.Inbound)
 	}
 	return m
 }

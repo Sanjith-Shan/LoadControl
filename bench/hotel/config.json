@@ -1,0 +1,22 @@
+{
+  "consulAddress": "consul:8500",
+  "jaegerAddress": "jaeger:6831",
+  "FrontendPort": "5000",
+  "GeoPort": "8083",
+  "GeoMongoAddress": "mongodb-geo:27017",
+  "ProfilePort": "8081",
+  "ProfileMongoAddress": "toxiproxy:27012",
+  "ProfileMemcAddress": "toxiproxy:11212",
+  "RatePort": "8084",
+  "RateMongoAddress": "toxiproxy:27011",
+  "RateMemcAddress": "toxiproxy:11211",
+  "RecommendPort": "8085",
+  "RecommendMongoAddress": "mongodb-recommendation:27017",
+  "ReservePort": "8087",
+  "ReserveMongoAddress": "toxiproxy:27013",
+  "ReserveMemcAddress": "toxiproxy:11213",
+  "SearchPort": "8082",
+  "UserPort": "8086",
+  "UserMongoAddress": "mongodb-user:27017",
+  "KnativeDomainName": ""
+}

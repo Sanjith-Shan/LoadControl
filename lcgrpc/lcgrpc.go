@@ -86,7 +86,7 @@ func outcome(err error) lc.Outcome {
 // case only priority propagation happens.
 func UnaryServerInterceptor(s *lc.Server, counter *AttemptCounter) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		countAttempt(ctx, counter)
+		countAttempt(ctx, s, counter)
 		p := infoFromMD(ctx)
 		if s == nil {
 			return handler(priority.WithInfo(ctx, p), req)
@@ -103,17 +103,30 @@ func UnaryServerInterceptor(s *lc.Server, counter *AttemptCounter) grpc.UnarySer
 	}
 }
 
-func countAttempt(ctx context.Context, c *AttemptCounter) {
-	if c == nil {
+func countAttempt(ctx context.Context, s *lc.Server, c *AttemptCounter) {
+	var m *lc.Metrics
+	if s != nil {
+		m = s.Config().Metrics
+	}
+	if c == nil && m == nil {
 		return
 	}
+	kind := "original"
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		if v := md.Get(retry.AttemptHeader); len(v) > 0 && v[0] != "1" {
-			c.Retry.Add(1)
-			return
+			kind = "retry"
 		}
 	}
-	c.Original.Add(1)
+	if c != nil {
+		if kind == "retry" {
+			c.Retry.Add(1)
+		} else {
+			c.Original.Add(1)
+		}
+	}
+	if m != nil {
+		m.Inbound.WithLabelValues(s.Config().Name, kind).Inc()
+	}
 }
 
 type wrappedStream struct {
@@ -128,7 +141,7 @@ func (w *wrappedStream) Context() context.Context { return w.ctx }
 func StreamServerInterceptor(s *lc.Server, counter *AttemptCounter) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		ctx := ss.Context()
-		countAttempt(ctx, counter)
+		countAttempt(ctx, s, counter)
 		p := infoFromMD(ctx)
 		if s == nil {
 			return handler(srv, &wrappedStream{ss, priority.WithInfo(ctx, p)})

@@ -143,11 +143,11 @@ func MarkDownstreamFailure(ctx context.Context) {
 
 // Ticket is an admitted request. Call Done exactly once.
 type Ticket struct {
-	s     *Server
-	tok   *limit.Token
-	info  priority.Info
-	start time.Time
-	cs    *callState
+	s      *Server
+	tok    *limit.Token
+	info   priority.Info
+	start  time.Time
+	cs     *callState
 	cancel context.CancelFunc
 }
 

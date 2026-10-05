@@ -1,0 +1,184 @@
+# hotelReservation (DeathStarBench, pinned commit 6ecb097) with LoadControl,
+# Toxiproxy in front of the rate/profile/reservation databases and caches,
+# Prometheus, Grafana and Jaeger. review and attractions are left out: the
+# benchmark's mixed workload never calls them.
+name: lchotel
+services:
+  consul:
+    image: hashicorp/consul:1.20
+    restart: always
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    ports: [ "16686:16686" ]
+    restart: always
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    command: [ "-host=0.0.0.0", "-config=/toxiproxy.json" ]
+    volumes: [ "./toxiproxy.json:/toxiproxy.json:ro" ]
+    ports: [ "8474:8474" ]
+    depends_on: [ mongodb-rate, mongodb-profile, mongodb-reservation, memcached-rate, memcached-profile, memcached-reserve ]
+    restart: always
+  frontend:
+    env_file: [ "${LC_ENV:-./configs/off.env}" ]
+    environment:
+      - LC_SERVICE=frontend
+      - JAEGER_SAMPLE_RATIO=0.01
+      - LOG_LEVEL=error
+      - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
+    configs: [ { source: server_config, target: /config.json } ]
+    image: loadcontrol/hotel:latest
+    entrypoint: frontend
+    restart: always
+    depends_on: [ consul ]
+    ports: [ "5000:5000" ]
+  search:
+    env_file: [ "${LC_ENV:-./configs/off.env}" ]
+    environment:
+      - LC_SERVICE=srv-search
+      - JAEGER_SAMPLE_RATIO=0.01
+      - LOG_LEVEL=error
+      - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
+    configs: [ { source: server_config, target: /config.json } ]
+    image: loadcontrol/hotel:latest
+    entrypoint: search
+    restart: always
+    depends_on: [ consul ]
+  geo:
+    env_file: [ "${LC_ENV:-./configs/off.env}" ]
+    environment:
+      - LC_SERVICE=srv-geo
+      - JAEGER_SAMPLE_RATIO=0.01
+      - LOG_LEVEL=error
+      - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
+    configs: [ { source: server_config, target: /config.json } ]
+    image: loadcontrol/hotel:latest
+    entrypoint: geo
+    restart: always
+    depends_on: [ mongodb-geo, consul ]
+  rate:
+    env_file: [ "${LC_ENV:-./configs/off.env}" ]
+    environment:
+      - LC_SERVICE=srv-rate
+      - JAEGER_SAMPLE_RATIO=0.01
+      - LOG_LEVEL=error
+      - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
+    configs: [ { source: server_config, target: /config.json } ]
+    image: loadcontrol/hotel:latest
+    entrypoint: rate
+    restart: always
+    depends_on: [ toxiproxy, consul ]
+  profile:
+    env_file: [ "${LC_ENV:-./configs/off.env}" ]
+    environment:
+      - LC_SERVICE=srv-profile
+      - JAEGER_SAMPLE_RATIO=0.01
+      - LOG_LEVEL=error
+      - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
+    configs: [ { source: server_config, target: /config.json } ]
+    image: loadcontrol/hotel:latest
+    entrypoint: profile
+    restart: always
+    depends_on: [ toxiproxy, consul ]
+  recommendation:
+    env_file: [ "${LC_ENV:-./configs/off.env}" ]
+    environment:
+      - LC_SERVICE=srv-recommendation
+      - JAEGER_SAMPLE_RATIO=0.01
+      - LOG_LEVEL=error
+      - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
+    configs: [ { source: server_config, target: /config.json } ]
+    image: loadcontrol/hotel:latest
+    entrypoint: recommendation
+    restart: always
+    depends_on: [ mongodb-recommendation, consul ]
+  user:
+    env_file: [ "${LC_ENV:-./configs/off.env}" ]
+    environment:
+      - LC_SERVICE=srv-user
+      - JAEGER_SAMPLE_RATIO=0.01
+      - LOG_LEVEL=error
+      - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
+    configs: [ { source: server_config, target: /config.json } ]
+    image: loadcontrol/hotel:latest
+    entrypoint: user
+    restart: always
+    depends_on: [ mongodb-user, consul ]
+  reservation:
+    env_file: [ "${LC_ENV:-./configs/off.env}" ]
+    environment:
+      - LC_SERVICE=srv-reservation
+      - JAEGER_SAMPLE_RATIO=0.01
+      - LOG_LEVEL=error
+      - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
+    configs: [ { source: server_config, target: /config.json } ]
+    image: loadcontrol/hotel:latest
+    entrypoint: reservation
+    restart: always
+    depends_on: [ toxiproxy, consul ]
+  memcached-rate:
+    image: memcached:1.6
+    command: [ "memcached", "-m", "128", "-t", "2" ]
+    restart: always
+  memcached-profile:
+    image: memcached:1.6
+    command: [ "memcached", "-m", "128", "-t", "2" ]
+    restart: always
+  memcached-reserve:
+    image: memcached:1.6
+    command: [ "memcached", "-m", "128", "-t", "2" ]
+    restart: always
+  mongodb-geo:
+    image: mongo:5.0
+    command: [ "mongod", "--wiredTigerCacheSizeGB", "0.25", "--quiet" ]
+    volumes: [ "geo:/data/db" ]
+    restart: always
+  mongodb-profile:
+    image: mongo:5.0
+    command: [ "mongod", "--wiredTigerCacheSizeGB", "0.25", "--quiet" ]
+    volumes: [ "profile:/data/db" ]
+    restart: always
+  mongodb-rate:
+    image: mongo:5.0
+    command: [ "mongod", "--wiredTigerCacheSizeGB", "0.25", "--quiet" ]
+    volumes: [ "rate:/data/db" ]
+    restart: always
+  mongodb-recommendation:
+    image: mongo:5.0
+    command: [ "mongod", "--wiredTigerCacheSizeGB", "0.25", "--quiet" ]
+    volumes: [ "recommendation:/data/db" ]
+    restart: always
+  mongodb-reservation:
+    image: mongo:5.0
+    command: [ "mongod", "--wiredTigerCacheSizeGB", "0.25", "--quiet" ]
+    volumes: [ "reservation:/data/db" ]
+    restart: always
+  mongodb-user:
+    image: mongo:5.0
+    command: [ "mongod", "--wiredTigerCacheSizeGB", "0.25", "--quiet" ]
+    volumes: [ "user:/data/db" ]
+    restart: always
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    volumes: [ "./prometheus.yml:/etc/prometheus/prometheus.yml:ro" ]
+    ports: [ "9090:9090" ]
+    restart: always
+  grafana:
+    image: grafana/grafana:11.3.1
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - "../grafana/provisioning:/etc/grafana/provisioning:ro"
+      - "../grafana/dashboards:/var/lib/grafana/dashboards:ro"
+    ports: [ "3000:3000" ]
+    restart: always
+volumes:
+  geo:
+  profile:
+  rate:
+  recommendation:
+  reservation:
+  user:
+configs:
+  server_config:
+    file: ./config.json
