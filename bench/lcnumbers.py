@@ -201,6 +201,24 @@ def exp3_table(file, title, trigger_desc):
     print()
 
 
+def window_table(file, title, desc, windows):
+    rows = load(file)
+    if not rows:
+        return
+    print(f"## {title}, results/{file}\n")
+    print(desc + "\n")
+    print("| run | n | " + " | ".join(f"goodput {a}-{b} s" for a, b in windows) + " | shed | clean/all |")
+    print("|---|---|" + "---|" * len(windows) + "---|---|")
+    for name, rs_all in by_name(rows).items():
+        rs = [r for r in rs_all if clean(r)] or rs_all
+        cells = []
+        for a, b in windows:
+            cells.append(fmt(smean(smean(s["good"] for s in r["series"] if a <= s["t"] < b) for r in rs)))
+        shed = sum(r["summary"]["shed"] for r in rs) // len(rs)
+        print(f"| {name} | {len(rs)} | " + " | ".join(cells) + f" | {shed} | {sum(clean(r) for r in rs_all)}/{len(rs_all)} |")
+    print()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cap", type=float, default=0)
@@ -216,7 +234,10 @@ def main():
     exp3_table("exp3_metastable.jsonl", "exp3 metastable recovery",
                "0.7x capacity (280 req/s, ramped over 15 s), users retry 3 times on a 1 s timeout. Trigger from 30 s: caches flushed and 200 ms of netem latency on the three caches (`-memc`), or a CPU-hogging container (`-hog`).")
     exp4()
-    table("exp8_capacity_shift.jsonl", "exp8 capacity shift (a CPU hog from 30 s to 90 s at 0.9x)", cap)
+    window_table("exp8_capacity_shift.jsonl", "exp8 capacity shift",
+                 "Offered load 0.9x of the measured capacity (360 req/s). A busy-loop container takes one of the "
+                 "two vCPUs from 30 s to 90 s. Goodput per second averaged over each window.",
+                 [(10, 30), (40, 90), (95, 120)])
     table("exp5_false_shedding.jsonl", "exp5 shedding below capacity", cap)
     table("exp6_algorithms.jsonl", "exp6 algorithm comparison", cap)
     table("exp7_overhead_e2e.jsonl", "exp7 end-to-end overhead at low load", cap)

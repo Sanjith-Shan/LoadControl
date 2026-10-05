@@ -283,6 +283,12 @@ def apply_fault(spec):
         sh("docker rm -f $(docker ps -aq --filter name=lchotel-hog) 2>/dev/null || true", check=False)
         for i in range(int(a[0])):
             sh(f"docker run -d --rm --name lchotel-hog{i} busybox sh -c 'while :; do :; done'")
+    elif kind == "hogw":
+        # A weighted noisy neighbour: one busy thread with 20x the default CFS
+        # weight. A plain busy loop is one runnable thread among hundreds and
+        # gets little; this one takes most of one vCPU. hogw:<n>
+        for i in range(int(a[0])):
+            sh(f"docker run -d --rm --cpu-shares 20480 --name lchotel-hogw{i} busybox sh -c 'while :; do :; done'")
     elif kind == "cpu":
         sh(f"docker update --cpus {a[1]} lchotel-{a[0]}-1")
     else:

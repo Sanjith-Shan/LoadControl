@@ -133,6 +133,7 @@ TRIGGER_MEMC = (f"{TRIGGER_ON}s=flush:rate,{TRIGGER_ON}s=flush:profile,{TRIGGER_
                 f"{TRIGGER_ON}s=latency:memc-rate:{{ms}},{TRIGGER_ON}s=latency:memc-profile:{{ms}},"
                 f"{TRIGGER_ON}s=latency:memc-reserve:{{ms}},{TRIGGER_OFF}s=clear")
 TRIGGER_HOG = f"{TRIGGER_ON}s=hog:1,{TRIGGER_OFF}s=clear"
+TRIGGER_HOGW = f"{TRIGGER_ON}s=hogw:1,{TRIGGER_OFF}s=clear"
 
 
 def exp3(a):
@@ -141,7 +142,7 @@ def exp3(a):
     # mongo: cold caches + slow database (too weak to tip this system, kept
     # as data); memc: cold caches + slow cache tier; hog: a noisy neighbour
     # takes one of the two vCPUs.
-    faults = {"mongo": TRIGGER, "memc": TRIGGER_MEMC, "hog": TRIGGER_HOG}[a.trigger].format(ms=a.slow_ms)
+    faults = {"mongo": TRIGGER, "memc": TRIGGER_MEMC, "hog": TRIGGER_HOG, "hogw": TRIGGER_HOGW}[a.trigger].format(ms=a.slow_ms)
     cfgs = {
         "off-userretry": ({}, "no control; users retry 3 times on timeout or error"),
         "naive-userretry": (NAIVE, "naive retries at every hop (3 attempts, per-try timeouts); users retry 3 times"),
@@ -251,8 +252,9 @@ def exp8(a):
         for name, (env, c) in cfgs.items():
             if a.only and name not in a.only:
                 continue
-            run("exp8", f"{name}-0.9x-hog", env, c, out, rate=round(a.cap * 0.9), duration=120,
-                faults="30s=hog:1,90s=clear", note=f"rep {rep}; busy-loop container from 30 s to 90 s")
+            h = "hogw" if a.trigger == "hogw" else "hog"
+            run("exp8", f"{name}-0.9x-{h}", env, c, out, rate=round(a.cap * 0.9), duration=120,
+                faults=f"30s={h}:1,90s=clear", note=f"rep {rep}; {h} busy-loop container from 30 s to 90 s")
 
 
 def exp7(a):
@@ -272,7 +274,7 @@ def main():
     ap.add_argument("--only", default="")
     ap.add_argument("--x", type=float, default=0)
     ap.add_argument("--slow-ms", type=int, default=100)
-    ap.add_argument("--trigger", default="mongo", choices=["mongo", "memc", "hog"])
+    ap.add_argument("--trigger", default="mongo", choices=["mongo", "memc", "hog", "hogw"])
     ap.add_argument("--loads", default="", help="override load multiples, e.g. 3,4")
     ap.add_argument("--ns", default="", help="static limits for exp_conc_sweep")
     ap.add_argument("--out", default="", help="override the results file")

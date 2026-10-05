@@ -18,3 +18,5 @@ $E exp3 --cap 400 --conc 32 --trigger memc --slow-ms 200 --only off-userretry,na
 $E exp4 --cap 400 --conc 32 --slow-ms 400
 bash bench/scripts/with_lock.sh bash bench/scripts/microbench.sh
 bash bench/scripts/wrk2_check.sh
+$E exp3 --cap 400 --conc 32 --trigger hogw
+$E exp8 --cap 400 --conc 32 --trigger hogw

@@ -108,7 +108,15 @@ questions.
   request queue, so two signals are offered: the wait time in the limiter's
   queue, and the Go scheduler's own run-queue latency from
   `runtime/metrics` (`/sched/latencies:seconds`), which measures how long
-  runnable goroutines wait for a CPU.
+  runnable goroutines wait for one of the process's Ps.
+
+  The second signal turned out to be the wrong one for this deployment, and
+  the measurement says so (exp2, `dagor-sched`): with many processes sharing
+  two vCPUs, the contention is between processes, inside the kernel's
+  scheduler. A goroutine that holds a P but whose OS thread is waiting for
+  the CPU counts as running, so Go's run queue stays short while every
+  request is slow, and the level never moves. It would fit a server that
+  owns its cores and is saturated by its own goroutines.
 
 ## Why the one-layer rule works
 
