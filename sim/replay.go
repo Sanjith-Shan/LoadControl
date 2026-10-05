@@ -201,14 +201,14 @@ type Outcome struct {
 }
 
 // Replay simulates one record with base params and compares.
-func Replay(base *Params, r *Record, file string) (*Comparison, error) {
+func Replay(base *Params, r *Record, file string) (*Comparison, *Result, error) {
 	p, err := ReplayParams(base, r)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s, err := New(p)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	res := s.Run()
 	d := r.DurationS
@@ -238,5 +238,5 @@ func Replay(base *Params, r *Record, file string) (*Comparison, error) {
 		e := round(math.Abs(c.AbsErr) / c.Measured.GoodRPS)
 		c.RelErr = &e
 	}
-	return c, nil
+	return c, res, nil
 }

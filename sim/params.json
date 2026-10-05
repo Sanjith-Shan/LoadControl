@@ -31,9 +31,24 @@
     "user.check": 0.1
   },
   "caches": {
-    "rate": {"keys": 80, "per_req": 5},
-    "profile": {"keys": 80, "per_req": 5},
-    "reserve": {"keys": 1120, "per_req": 10}
+    "rate": {
+      "keys": 80,
+      "per_req": 5
+    },
+    "profile": {
+      "keys": 80,
+      "per_req": 5
+    },
+    "reserve_cap": {
+      "keys": 80,
+      "per_req": 5,
+      "server": "reserve"
+    },
+    "reserve": {
+      "keys": 1200,
+      "per_req": 22,
+      "server": "reserve"
+    }
   },
   "memc_ms": 0.02,
   "memc_key_ms": 0.005,
@@ -42,7 +57,11 @@
     "key_ms": 0.05,
     "io_ms": 0.2,
     "pool": 100,
-    "ctx_todo": {"rate": true}
+    "ctx_todo": {
+      "rate": true,
+      "profile": true,
+      "reservation": true
+    }
   },
   "max_concurrency": {},
   "cancel_propagation": true,
@@ -58,10 +77,38 @@
     "send_deadline": false,
     "retry_shed": true
   },
-  "mix": {"search": 0.6, "recommend": 0.39, "user": 0.005, "reserve": 0.005},
-  "tiers": [0.2, 0.3, 0.5],
-  "load": {"process": "poisson", "rps": 0, "x": 1, "steps": ""},
-  "flush": {"at": 0, "dur": 0},
-  "slow": {"at": 0, "dur": 0, "extra_ms": 0},
-  "env": {}
+  "mix": {
+    "search": 0.6,
+    "recommend": 0.39,
+    "user": 0.005,
+    "reserve": 0.005
+  },
+  "tiers": [
+    0.2,
+    0.3,
+    0.5
+  ],
+  "load": {
+    "process": "poisson",
+    "rps": 0,
+    "x": 1,
+    "steps": ""
+  },
+  "flush": {
+    "at": 0,
+    "dur": 0
+  },
+  "slow": {
+    "at": 0,
+    "dur": 0,
+    "extra_ms": 0
+  },
+  "env": {},
+  "conn": {
+    "proxy": false,
+    "new_ms": 0,
+    "req_ms": 0,
+    "frontend_new_ms": 0,
+    "max_idle": 2000
+  }
 }

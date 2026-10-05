@@ -61,7 +61,10 @@ type Sim struct {
 	t0        int64 // end of the warm-up phase; reported time starts here
 	deps      map[string]*dep
 	mongoProc map[string]*proc
-	host      *proc
+	host      *proc // CPU outside the services (hidden_ms)
+	proxy     *proc // docker-proxy in front of the frontend's published port
+	idle      int   // the load generator's idle keep-alive connections
+	hogs      map[string]*proc
 	// Unsupported lists fault specs the model ignored.
 	Unsupported []string
 	outstanding int
@@ -138,6 +141,8 @@ func (s *Sim) build() error {
 	lookup := func(k string) (string, bool) { v, ok := p.Env[k]; return v, ok }
 	s.mongoProc = map[string]*proc{}
 	s.host = s.newProc("host", "host", true)
+	s.proxy = s.newProc("docker-proxy", "go", true)
+	s.hogs = map[string]*proc{}
 	for i, name := range svcNames {
 		v := &service{name: name, id: i, http: i == svcFrontend, maxConc: p.MaxConcurrency[name],
 			dbTODO: p.Mongo.CtxTODO[name], pool: p.Mongo.Pool}
@@ -182,20 +187,35 @@ func (s *Sim) build() error {
 		return x
 	}
 	call := func(x *handler) hstep { return hstep{kind: stCall, to: x} }
-	mk := func(name string) *cache {
+	memc := map[string]*proc{}
+	mk := func(name, defQuery string) *cache {
 		cp := p.Caches[name]
-		c := &cache{name: name, id: len(s.caches), present: make([]bool, max(1, cp.Keys)), perReq: max(1, cp.PerReq), proc: s.newProc("memc-"+name, "memcached", false)}
+		c := &cache{name: name, server: cp.Server, query: cp.Query, id: len(s.caches), present: make([]bool, max(1, cp.Keys)), perReq: max(1, cp.PerReq)}
+		if c.server == "" {
+			c.server = name
+		}
+		if c.query == "" {
+			c.query = defQuery
+		}
+		if memc[c.server] == nil {
+			memc[c.server] = s.newProc("memc-"+c.server, "memcached", false)
+		}
+		c.proc = memc[c.server]
 		for i := range c.present {
 			c.present[i] = true // the real system runs warm
 		}
 		s.caches = append(s.caches, c)
 		return c
 	}
-	cRate, cProfile, cReserve := mk("rate"), mk("profile"), mk("reserve")
+	// Query shapes from the services' code: rate scans per missing hotel in
+	// turn, profile and reservation counts query per key concurrently,
+	// reservation capacities with one $in query.
+	cRate, cProfile := mk("rate", "sequential"), mk("profile", "parallel")
+	cCap, cReserve := mk("reserve_cap", "single"), mk("reserve", "parallel")
 	geo := h(svcGeo, "nearby")
 	rate := h(svcRate, "get", hstep{kind: stCache, cache: cRate})
 	search := h(svcSearch, "nearby", call(geo), call(rate))
-	check := h(svcReservation, "check", hstep{kind: stCache, cache: cReserve})
+	check := h(svcReservation, "check", hstep{kind: stCache, cache: cCap}, hstep{kind: stCache, cache: cReserve})
 	makeRes := h(svcReservation, "make", hstep{kind: stCache, cache: cReserve}, hstep{kind: stDB})
 	profile := h(svcProfile, "get", hstep{kind: stCache, cache: cProfile})
 	rec := h(svcRecommendation, "get")
@@ -234,9 +254,15 @@ func (s *Sim) build() error {
 func (s *Sim) newProc(name, kind string, preempt bool) *proc {
 	n := s.P.Slots[kind]
 	if n <= 0 {
-		n = map[string]int{"go": 2, "memcached": 4, "mongod": 4, "host": 2}[kind]
+		n = map[string]int{"go": 2, "memcached": 4, "mongod": 4, "host": 2, "hog": 1}[kind]
 	}
-	return &proc{name: name, slots: n, preempt: preempt}
+	w := s.P.Weights[kind]
+	if w <= 0 {
+		w = 1024 // Docker's default cpu-shares
+	}
+	p := &proc{name: name, slots: n, weight: w, preempt: preempt}
+	s.cpu.all = append(s.cpu.all, p)
+	return p
 }
 
 func envGet(lookup func(string) (string, bool), svc, key, def string) string {
@@ -398,11 +424,36 @@ func (s *Sim) userAttempt(u *ureq) {
 			return
 		}
 		settled = true
+		if !r.local && s.idle < s.P.Conn.MaxIdle {
+			s.idle++ // a response came back: the connection is kept alive
+		}
 		s.cancel(a, Canceled)
 		s.post(func() { s.userResult(u, r) })
 	}
 	a.onDone(func() { settle(reply{code: DeadlineExceeded, local: true}) })
-	s.at(s.now+ms(s.P.NetMS), func() { s.serve(s.entry[u.typ], a, u.in, u.attempts, settle) })
+	send := func() {
+		if !settled {
+			s.at(s.now+ms(s.P.NetMS), func() { s.serve(s.entry[u.typ], a, u.in, u.attempts, settle) })
+		}
+	}
+	cp := s.P.Conn
+	switch {
+	case !cp.Proxy:
+		send()
+	case s.idle > 0:
+		s.idle--
+		s.run(s.proxy, s.work(cp.ReqMS), send)
+	default:
+		// A new connection: docker-proxy accepts it and dials the frontend
+		// even if the client has given up by then (that work is lost), and
+		// forwards nothing for a client that is gone.
+		s.sec().conns++
+		s.run(s.proxy, s.work(cp.NewMS)+s.work(cp.ReqMS), func() {
+			if !settled {
+				s.run(s.svc[svcFrontend].proc, s.work(cp.FrontendNewMS), send)
+			}
+		})
+	}
 }
 
 // User outcomes, as cmd/loadgen classifies the final attempt.
@@ -479,7 +530,7 @@ func (s *Sim) schedFaults() {
 	if f := s.P.Flush; f.At > 0 || f.Dur > 0 {
 		at(f.At, func() {
 			for _, c := range s.caches {
-				if f.hits(c.name) {
+				if f.hits(c.server) {
 					clear(c.present)
 					c.disabled = s.t0 + ms((f.At+f.Dur)*1e3)
 				}
@@ -507,7 +558,7 @@ func (s *Sim) fault(spec string) {
 	switch {
 	case a[0] == "flush" && len(a) > 1:
 		for _, c := range s.caches {
-			if c.name == a[1] {
+			if c.server == a[1] {
 				clear(c.present)
 			}
 		}
@@ -518,9 +569,28 @@ func (s *Sim) fault(spec string) {
 		s.dep(a[1]).down = true
 	case a[0] == "up" && len(a) > 1:
 		s.dep(a[1]).down = false
+	case (a[0] == "hog" || a[0] == "hogw") && len(a) > 1 && s.cpu.procs:
+		// A busy-loop container with n threads, at the default weight
+		// (hog) or a high one (hogw: --cpu-shares 20480).
+		n, _ := strconv.Atoi(a[1])
+		p := s.hogs[a[0]]
+		if p == nil {
+			p = s.newProc(a[0], "hog", false)
+			if a[0] == "hogw" {
+				p.weight = s.P.HogwWeight
+				if p.weight <= 0 {
+					p.weight = 20480
+				}
+			}
+			s.hogs[a[0]] = p
+		}
+		s.setHog(p, n)
 	case a[0] == "clear":
 		for _, d := range s.deps {
 			*d = dep{}
+		}
+		for _, p := range s.hogs {
+			s.setHog(p, 0)
 		}
 	default:
 		s.Unsupported = append(s.Unsupported, spec)

@@ -110,6 +110,8 @@ type client struct{ cfg lc.ClientConfig }
 
 type cache struct {
 	name     string
+	server   string // memcached instance
+	query    string
 	id       int
 	present  []bool
 	perReq   int
@@ -321,7 +323,7 @@ func (e *exec) next() {
 	case stCache:
 		s.cacheRead(e, st.cache)
 	case stDB:
-		s.dbOp(e, 1, e.next)
+		s.dbOp(e, 1, e.next, e.finish)
 	}
 }
 
@@ -478,13 +480,16 @@ func (s *Sim) backoff(b retry.Backoff, n int) time.Duration {
 	return time.Duration(s.rMisc.Float64() * d)
 }
 
-// cacheRead is the rate/profile/reservation pattern: memcached get for the
-// request's keys, one MongoDB query for the misses, then memcached set.
-// Keys are only filled when the query returns to a handler still waiting
-// for it, so cancelled requests do not warm the cache.
+// cacheRead is the rate/profile/reservation pattern, as in the
+// hotelReservation code: one memcached GetMulti for the request's keys (no
+// context: it cannot be cancelled), MongoDB for the misses, then the
+// handler goes on while a goroutine sets the keys in memcached. How the
+// misses are queried follows each service: rate runs one query per missing
+// hotel in sequence, profile one per hotel concurrently, reservation one
+// $in query (capacities) or one per hotel and date concurrently (counts).
 func (s *Sim) cacheRead(e *exec, ca *cache) {
 	k := ca.perReq
-	d := s.dep("memc-" + ca.name)
+	d := s.dep("memc-" + ca.server)
 	s.run(ca.proc, s.work(s.P.MemcMS+s.P.MemcKeyMS*float64(k)), func() {
 		s.at(s.now+d.extra, func() {
 			st := s.sec()
@@ -502,40 +507,75 @@ func (s *Sim) cacheRead(e *exec, ca *cache) {
 				e.next()
 				return
 			}
-			s.dbOp(e, len(miss), func() {
-				s.run(ca.proc, s.work(s.P.MemcMS), func() {
+			done := false
+			fail := func(rc code) {
+				if !done {
+					done = true
+					e.finish(rc)
+				}
+			}
+			ok := func() {
+				if done {
+					return
+				}
+				done = true
+				s.run(ca.proc, s.work(s.P.MemcMS), func() { // go MemcClient.Set
 					s.at(s.now+d.extra, func() {
 						if s.now >= ca.disabled && !d.down {
 							for _, key := range miss {
 								ca.present[key] = true
 							}
 						}
-						e.next()
 					})
 				})
-			})
+				e.next()
+			}
+			switch ca.query {
+			case "sequential":
+				var one func(i int)
+				one = func(i int) {
+					if i == len(miss) {
+						ok()
+						return
+					}
+					s.dbOp(e, 1, func() { one(i + 1) }, fail)
+				}
+				one(0)
+			case "parallel":
+				left := len(miss)
+				for range miss {
+					s.dbOp(e, 1, func() {
+						if left--; left == 0 {
+							ok()
+						}
+					}, fail)
+				}
+			default:
+				s.dbOp(e, len(miss), ok, fail)
+			}
 		})
 	})
 }
 
 // dbOp is one MongoDB operation from e's service: wait for a pooled
-// connection, the injected latency (toxiproxy) and base I/O without CPU,
-// then the query's CPU in mongod. A request context abandons the wait (the
-// driver returns ctx.Err()) but mongod finishes the work anyway; with
-// context.TODO() the handler waits it out.
-func (s *Sim) dbOp(e *exec, keys int, then func()) {
+// connection, base I/O without CPU, the query's CPU in mongod, then any
+// injected latency on the response. A request context abandons the wait
+// (the driver returns ctx.Err()) but mongod finishes the work anyway; with
+// context.TODO(), which every hotelReservation service uses, the handler
+// waits it out.
+func (s *Sim) dbOp(e *exec, keys int, then func(), fail func(code)) {
 	v := e.h.svc
 	s.sec().mongo++
 	over := false
 	if !v.dbTODO {
 		if e.c.err != OK {
-			e.finish(e.c.err)
+			fail(e.c.err)
 			return
 		}
 		e.c.onDone(func() {
 			if !over {
 				over = true
-				s.post(func() { e.finish(e.c.err) })
+				s.post(func() { fail(e.c.err) })
 			}
 		})
 	}
@@ -549,13 +589,12 @@ func (s *Sim) dbOp(e *exec, keys int, then func()) {
 			s.poolRelease(v)
 			if !over {
 				over = true
-				e.finish(Internal)
+				fail(Internal)
 			}
 			return
 		}
 		s.at(s.now+ms(s.P.Mongo.IOMS), func() {
 			s.run(s.mongoProc[v.name], s.work(s.P.Mongo.OpMS+s.P.Mongo.KeyMS*float64(keys)), func() {
-				// toxiproxy delays the response stream
 				s.at(s.now+d.extra, func() {
 					s.poolRelease(v)
 					if !over {

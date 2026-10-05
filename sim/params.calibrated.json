@@ -34,17 +34,23 @@
     "user.check": 0.18333768427879243
   },
   "caches": {
-    "profile": {
-      "keys": 80,
-      "per_req": 5
-    },
     "rate": {
       "keys": 80,
       "per_req": 5
     },
+    "profile": {
+      "keys": 80,
+      "per_req": 5
+    },
+    "reserve_cap": {
+      "keys": 80,
+      "per_req": 5,
+      "server": "reserve"
+    },
     "reserve": {
-      "keys": 1120,
-      "per_req": 10
+      "keys": 1200,
+      "per_req": 22,
+      "server": "reserve"
     }
   },
   "memc_ms": 0.07220509829999999,
@@ -55,7 +61,9 @@
     "io_ms": 0.2,
     "pool": 100,
     "ctx_todo": {
-      "rate": true
+      "rate": true,
+      "profile": true,
+      "reservation": true
     }
   },
   "max_concurrency": {},
@@ -100,5 +108,12 @@
     "at": 0,
     "dur": 0
   },
-  "env": {}
+  "env": {},
+  "conn": {
+    "proxy": true,
+    "new_ms": 1.0,
+    "req_ms": 0.05,
+    "frontend_new_ms": 0.05,
+    "max_idle": 2000
+  }
 }

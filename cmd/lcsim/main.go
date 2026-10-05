@@ -265,6 +265,7 @@ func replay(args []string) error {
 	skip := fs.String("skip", "sim_replay", "skip files whose name contains this")
 	out := fs.String("out", "", "JSONL output")
 	par := fs.Int("parallel", 1, "runs in parallel")
+	secOut := fs.String("seconds", "", "also write the simulated per-second series of every run here (JSONL)")
 	exclude := fs.String("exclude", "", "comma list of runs to treat as contaminated: exp/name, or exp/name@time-prefix for one occurrence")
 	fs.Parse(args)
 	files = append(files, fs.Args()...)
@@ -300,6 +301,7 @@ func replay(args []string) error {
 		}
 	}
 	res := make([]*sim.Comparison, len(jobs))
+	series := make([]*sim.Result, len(jobs))
 	errs := make([]error, len(jobs))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, max(1, *par))
@@ -309,7 +311,10 @@ func replay(args []string) error {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			res[i], errs[i] = sim.Replay(base, j.rec, j.file)
+			res[i], series[i], errs[i] = sim.Replay(base, j.rec, j.file)
+			if *secOut == "" {
+				series[i] = nil
+			}
 			if errs[i] == nil && res[i].Contaminated == "" && excluded(*exclude, j.rec) {
 				res[i].Contaminated = "listed in -exclude"
 			}
@@ -319,6 +324,25 @@ func replay(args []string) error {
 	w, closeFn, err := output(*out)
 	if err != nil {
 		return err
+	}
+	if *secOut != "" {
+		sw, sclose, err := output(*secOut)
+		if err != nil {
+			return err
+		}
+		se := json.NewEncoder(sw)
+		for i, r := range series {
+			if r == nil {
+				continue
+			}
+			for _, x := range r.Seconds {
+				x.Run = jobs[i].rec.Exp + "/" + jobs[i].rec.Name + "@" + jobs[i].rec.Time
+				se.Encode(x)
+			}
+		}
+		if err := sclose(); err != nil {
+			return err
+		}
 	}
 	enc := json.NewEncoder(w)
 	byExp := map[string][]*sim.Comparison{}

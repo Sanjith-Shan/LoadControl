@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const nCache = 8 // caches tracked in stats
+
 // sec accumulates one simulated second. Arrivals count in the second they
 // arrive, outcomes in the second they end.
 type sec struct {
@@ -16,8 +18,8 @@ type sec struct {
 	shed                                 [nSvc][nShed]int64
 	att                                  [nSvc][2]int64 // inbound original, retry
 	user                                 [2]int64
-	leaf, mongo                          int64
-	looks, hits                          [3]int64
+	leaf, mongo, conns                   int64
+	looks, hits                          [nCache]int64
 	local                                [nLocal]int64
 	limit, inflight, queue               [nSvc]int
 	util                                 float64
@@ -116,6 +118,7 @@ type Second struct {
 	User        [2]int64                    `json:"user_attempts"`
 	LeafPerReq  float64                     `json:"leaf_per_req"`
 	MongoOps    int64                       `json:"mongo_ops"`
+	NewConns    int64                       `json:"new_conns"` // connections the load generator opened (conn.proxy)
 	CacheHit    map[string]float64          `json:"cache_hit"`
 	Local       map[string]int64            `json:"client_local,omitempty"`
 	Limit       map[string]int              `json:"limit,omitempty"`
@@ -242,8 +245,10 @@ func (s *Sim) result(wall time.Duration) *Result {
 			a.success += b.success
 			a.goodput += b.goodput
 			tierLat[t] = append(tierLat[t], st.lat[t]...)
-			agg.looks[t] += st.looks[t]
-			agg.hits[t] += st.hits[t]
+		}
+		for c := range nCache {
+			agg.looks[c] += st.looks[c]
+			agg.hits[c] += st.hits[c]
 		}
 		for v := range nSvc {
 			for k := range nShed {
@@ -301,7 +306,7 @@ func (s *Sim) result(wall time.Duration) *Result {
 func (s *Sim) second(i int, st *sec) Second {
 	o := Second{T: i, Offered: st.offered, Completed: st.completed, Success: st.success, Goodput: st.goodput,
 		Slow: st.out[oSlow], UserShed: st.out[oShed], Failed: st.out[oError], Timeout: st.out[oTimeout], SuccessRate: round(ratio(st.success, st.completed)),
-		Tiers: map[string]TierSec{}, User: st.user, LeafPerReq: round(ratio(st.leaf, st.offered)), MongoOps: st.mongo,
+		Tiers: map[string]TierSec{}, User: st.user, LeafPerReq: round(ratio(st.leaf, st.offered)), MongoOps: st.mongo, NewConns: st.conns,
 		CPUUtil: round(st.util), CPUJobs: st.jobs, Limit: map[string]int{}, Inflight: map[string]int{}, Queue: map[string]int{}}
 	for t, name := range tierNames {
 		slices.Sort(st.lat[t])

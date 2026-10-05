@@ -151,6 +151,13 @@ setup (`bench/k8s/`). Faults are cache flushes, `tc netem` latency on the
 cache and database containers, and a CPU-hogging container.
 [bench/README.md](bench/README.md) has the full procedure.
 
+![Grafana dashboard during a 0.5x, 3x, 0.5x load step](docs/grafana.png)
+
+*The bundled Grafana dashboard during a demonstration run (0.5x, then 3x,
+then 0.5x load with every piece on): admitted vs received requests, shedding
+by tier, each service's adaptive limit, retries per hop, queue wait and the
+retry budget. A demo, not one of the measured runs.*
+
 ## Tests
 
 `go test ./...` runs unit, property and integration tests: rapid state-machine

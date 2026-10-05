@@ -35,8 +35,11 @@ type Params struct {
 	Slots     map[string]int `json:"slots,omitempty"`
 	SliceMS   float64        `json:"slice_ms,omitempty"`
 	NoRunnext bool           `json:"no_runnext,omitempty"` // procs mode: plain FIFO, no runnext slot
-	Dist      string         `json:"dist"`                 // exp | lognormal | const
-	CV        float64        `json:"cv"`                   // lognormal coefficient of variation
+	// CFS weight per process kind (Docker cpu-shares; default 1024).
+	Weights    map[string]float64 `json:"weights,omitempty"`
+	HogwWeight float64            `json:"hogw_weight,omitempty"` // cpu-shares of the hogw fault container (default 20480)
+	Dist       string             `json:"dist"`                  // exp | lognormal | const
+	CV         float64            `json:"cv"`                    // lognormal coefficient of variation
 
 	CapacityRPS float64 `json:"capacity_rps"` // measured max goodput with no control; load.x is relative to it
 
@@ -50,6 +53,7 @@ type Params struct {
 	MemcMS    float64                `json:"memc_ms"`     // memcached CPU per operation
 	MemcKeyMS float64                `json:"memc_key_ms"` // plus per key
 	Mongo     MongoParams            `json:"mongo"`
+	Conn      ConnParams             `json:"conn"`
 
 	MaxConcurrency    map[string]int `json:"max_concurrency"`    // optional per-service handler cap; 0 = a goroutine per request
 	CancelPropagation bool           `json:"cancel_propagation"` // caller cancel reaches the callee (gRPC, HTTP disconnect)
@@ -72,8 +76,24 @@ type Params struct {
 }
 
 type CacheParams struct {
-	Keys   int `json:"keys"`    // key space
-	PerReq int `json:"per_req"` // keys read per request
+	Keys   int    `json:"keys"`             // key space
+	PerReq int    `json:"per_req"`          // keys read per request (one GetMulti)
+	Server string `json:"server,omitempty"` // memcached instance (flush and latency target); default the cache name
+	Query  string `json:"query,omitempty"`  // misses as: single (one query), sequential or parallel (one per key)
+}
+
+// ConnParams model the HTTP connections between the load generator and the
+// frontend. The load generator keeps idle keep-alive connections; an
+// attempt that times out closes its connection, so the next one needs a new
+// one. Connections to the frontend's published port go through Docker's
+// userland proxy, which accepts, dials the container and copies, as a Go
+// process of its own.
+type ConnParams struct {
+	Proxy         bool    `json:"proxy"`           // model docker-proxy and connection reuse
+	NewMS         float64 `json:"new_ms"`          // docker-proxy CPU per new connection (accept, dial, goroutines, teardown)
+	ReqMS         float64 `json:"req_ms"`          // docker-proxy CPU per request copied
+	FrontendNewMS float64 `json:"frontend_new_ms"` // frontend CPU to accept a connection
+	MaxIdle       int     `json:"max_idle"`        // the load generator's idle connection cap (MaxIdleConnsPerHost)
 }
 
 type MongoParams struct {

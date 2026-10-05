@@ -199,4 +199,3 @@ func (s *Sim) cancel(c *ctx, err code) {
 
 // onDone registers fn to run (synchronously) when c ends.
 func (c *ctx) onDone(fn func()) { c.hooks = append(c.hooks, fn) }
-
