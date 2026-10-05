@@ -112,6 +112,7 @@ type cache struct {
 	name     string
 	server   string // memcached instance
 	query    string
+	bytes    int // per value
 	id       int
 	present  []bool
 	perReq   int
@@ -484,26 +485,29 @@ func (s *Sim) backoff(b retry.Backoff, n int) time.Duration {
 // hotelReservation code: one memcached GetMulti for the request's keys (no
 // context: it cannot be cancelled), MongoDB for the misses, then the
 // handler goes on while a goroutine sets the keys in memcached. How the
-// misses are queried follows each service: rate runs one query per missing
-// hotel in sequence, profile one per hotel concurrently, reservation one
-// $in query (capacities) or one per hotel and date concurrently (counts).
+// misses are queried follows each service (see build): single, parallel
+// (one query per key, concurrently), sequential, or none.
 func (s *Sim) cacheRead(e *exec, ca *cache) {
 	k := ca.perReq
 	d := s.dep("memc-" + ca.server)
 	s.run(ca.proc, s.work(s.P.MemcMS+s.P.MemcKeyMS*float64(k)), func() {
-		s.at(s.now+d.extra, func() {
-			st := s.sec()
-			var miss []int
-			for range k {
-				key := s.rKey.IntN(len(ca.present))
-				st.looks[ca.id]++
-				if ca.present[key] && s.now >= ca.disabled && !d.down {
-					st.hits[ca.id]++
-				} else {
-					miss = append(miss, key)
-				}
+		// The lookup happens now; the reply then takes one injected delay per
+		// TCP round trip it needs (slow start from an idle connection).
+		st := s.sec()
+		var miss []int
+		hits := 0
+		for range k {
+			key := s.rKey.IntN(len(ca.present))
+			st.looks[ca.id]++
+			if ca.present[key] && s.now >= ca.disabled && !d.down {
+				st.hits[ca.id]++
+				hits++
+			} else {
+				miss = append(miss, key)
 			}
-			if len(miss) == 0 {
+		}
+		s.at(s.now+d.extra*int64(roundTrips(hits*ca.bytes)), func() {
+			if len(miss) == 0 || ca.query == "none" {
 				e.next()
 				return
 			}
@@ -632,4 +636,17 @@ func (s *Sim) slotFree(v *service) {
 		v.running++
 		s.post(next)
 	}
+}
+
+// roundTrips is how many round trips a reply of n bytes takes from a
+// connection whose congestion window restarted after idling (Linux
+// default): 10 segments of 1448 bytes, doubling each round trip.
+func roundTrips(n int) int {
+	seg := (n + 1447) / 1448
+	k, w := 1, 10
+	for sent := w; sent < seg; k++ {
+		w *= 2
+		sent += w
+	}
+	return k
 }

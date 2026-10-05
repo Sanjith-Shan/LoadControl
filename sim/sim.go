@@ -190,7 +190,7 @@ func (s *Sim) build() error {
 	memc := map[string]*proc{}
 	mk := func(name, defQuery string) *cache {
 		cp := p.Caches[name]
-		c := &cache{name: name, server: cp.Server, query: cp.Query, id: len(s.caches), present: make([]bool, max(1, cp.Keys)), perReq: max(1, cp.PerReq)}
+		c := &cache{name: name, server: cp.Server, query: cp.Query, bytes: cp.ValueBytes, id: len(s.caches), present: make([]bool, max(1, cp.Keys)), perReq: max(1, cp.PerReq)}
 		if c.server == "" {
 			c.server = name
 		}
@@ -207,11 +207,13 @@ func (s *Sim) build() error {
 		s.caches = append(s.caches, c)
 		return c
 	}
-	// Query shapes from the services' code: rate scans per missing hotel in
-	// turn, profile and reservation counts query per key concurrently,
-	// reservation capacities with one $in query.
-	cRate, cProfile := mk("rate", "sequential"), mk("profile", "parallel")
-	cCap, cReserve := mk("reserve_cap", "single"), mk("reserve", "parallel")
+	// Query shapes from the services' code: rate and profile query MongoDB
+	// once per missing hotel, concurrently; reservation capacities with one
+	// $in query. Reservation counts only go to MongoDB when GetMulti returns
+	// ErrCacheMiss, which it does not for partial misses, so their misses
+	// cost nothing and are never filled.
+	cRate, cProfile := mk("rate", "parallel"), mk("profile", "parallel")
+	cCap, cReserve := mk("reserve_cap", "single"), mk("reserve", "none")
 	geo := h(svcGeo, "nearby")
 	rate := h(svcRate, "get", hstep{kind: stCache, cache: cRate})
 	search := h(svcSearch, "nearby", call(geo), call(rate))

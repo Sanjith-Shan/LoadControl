@@ -262,7 +262,7 @@ func replay(args []string) error {
 	cfg := fs.String("config", "", "overrides applied to every run (for experiments with the model)")
 	var files multi
 	fs.Var(&files, "results", "results JSONL file from bench/lcbench.py (repeatable; positional args too)")
-	skip := fs.String("skip", "sim_replay", "skip files whose name contains this")
+	skip := fs.String("skip", "sim_replay,k8s_", "skip files whose name contains any of these (comma list; k8s runs are a different deployment)")
 	out := fs.String("out", "", "JSONL output")
 	par := fs.Int("parallel", 1, "runs in parallel")
 	secOut := fs.String("seconds", "", "also write the simulated per-second series of every run here (JSONL)")
@@ -279,7 +279,7 @@ func replay(args []string) error {
 	}
 	var jobs []job
 	for _, f := range files {
-		if *skip != "" && strings.Contains(f, *skip) {
+		if slices.ContainsFunc(strings.Split(*skip, ","), func(x string) bool { return x != "" && strings.Contains(f, x) }) {
 			continue
 		}
 		b, err := os.ReadFile(f)

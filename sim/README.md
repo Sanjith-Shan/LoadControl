@@ -14,7 +14,8 @@ go run ./cmd/lcsim replay -out results/sim_replay.jsonl results/*.jsonl
 ```
 
 A run is a pure function of its params and seed. 60 simulated seconds at
-5,000 req/s take 1.3 to 4.7 s of wall time on the mini PC (Ryzen 3 4300U),
+5,000 req/s take 0.7 to 1.8 s of wall time with the calibrated default
+(1.3 to 4.7 s with the placeholder) on the mini PC (Ryzen 3 4300U),
 depending on how much retry traffic the config generates.
 
 ## What is library code and what is modeled
@@ -64,41 +65,66 @@ the library draws those from the global generator.
   (geo, then rate), then reservation.CheckAvailability, then profile, all
   sequential; recommend = recommendation then profile; login = user;
   reserve = user then reservation.MakeReservation. Mix 60 / 39 / 0.5 / 0.5.
-- **CPU**: `cores` cores that every service, memcached and MongoDB share,
-  in one of three models. `cpu=procs` (the calibrated default) is
-  two-level, like the real VM: every job belongs to a process (each Go
-  service with `slots.go` = GOMAXPROCS 2, each memcached with
-  `slots.memcached` 4 threads, each mongod with `slots.mongod` 4, and a
-  `host` process for `hidden_ms`); a process runs at most that many jobs at
-  once and queues the rest FIFO like Go's run queues, with Go's runnext slot
-  (the goroutine readied most recently, a new handler or a reply handed to
-  its caller, runs next; `no_runnext` turns it off) and preemption after
-  `slice_ms` (10) of CPU when others wait; the kernel then shares the cores
-  equally between all running jobs, which is processor sharing over the
-  running set. `cpu=ps` is one processor-sharing pool over every job;
-  `cpu=fcfs` is first come first served. Every RPC costs `rpc_server_ms` at the callee before admission
-  (so shed requests are not free) and `rpc_client_ms` at the caller; every
-  handler has its own mean (`handlers`), drawn exponential, lognormal or
-  constant. Without a limiter a service runs a goroutine per request, so
-  in-flight work is unbounded: under `ps` every request slows equally and
-  goodput collapses to zero; under `procs` the runnext slot lets the newest
-  requests through while old ones starve, so some goodput survives, as
-  measured.
-- **Caches**: rate, profile and reservation read `per_req` keys from
-  memcached; misses go to MongoDB and are filled after the query returns,
-  only if the handler is still waiting. `flush` empties the caches and
-  drops fills for `dur` seconds (the cold-cache trigger).
+- **CPU**: `cores` cores that every service, memcached, MongoDB, the load
+  generator and Docker's proxy share, in one of three models. `cpu=procs`
+  (the calibrated default) is two-level, like the real VM. Every job
+  belongs to a process: each Go service (`slots.go` = GOMAXPROCS 2), each
+  memcached (`slots.memcached` 4 threads), each mongod (`slots.mongod` 4),
+  docker-proxy (a Go process), and a `host` process for `hidden_ms`. A
+  process runs at most that many jobs at once and queues the rest FIFO like
+  Go's run queues, with Go's runnext slot (the goroutine readied most
+  recently, a new handler or a reply handed to its caller, runs next;
+  `no_runnext` turns it off) and preemption after `slice_ms` (10) of CPU
+  when others wait. The kernel shares the cores between busy processes by
+  weight, as CFS does between cgroups: each process has `weights` (Docker's
+  default cpu-shares, 1024), gets cores*w/W but at most one core per
+  running thread, and the rest is shared out again (water filling); its
+  threads split its share. `cpu=ps` is one processor-sharing pool over every
+  job; `cpu=fcfs` is first come first served. Every RPC costs
+  `rpc_server_ms` at the callee before admission (so shed requests are not
+  free) and `rpc_client_ms` at the caller; every handler has its own mean
+  (`handlers`), drawn exponential, lognormal or constant. Without a limiter
+  a service runs a goroutine per request, so in-flight work is unbounded:
+  under `ps` every request slows equally and goodput collapses to zero;
+  under `procs` the runnext slot lets the newest requests through while
+  old ones starve, so some goodput survives, as measured.
+- **Connections** (`conn`, on in the calibrated file). The load generator
+  keeps idle keep-alive connections (up to `conn.max_idle`). A response
+  returns its connection to the pool; an attempt that times out closes its
+  connection, so the next attempt needs a new one. Every request to the
+  frontend's published port passes through docker-proxy (`conn.req_ms` of
+  CPU); a new connection also costs `conn.new_ms` there (accept, dial the
+  container, start the copying goroutines, tear down) and
+  `conn.frontend_new_ms` in the frontend. The kernel completes the client's
+  connect at once (listen backlog), so a client that gives up while its new
+  connection waits for docker-proxy has still cost docker-proxy the setup,
+  and nothing is forwarded. This is the loop that keeps the measured system
+  down: timeouts force new connections, new connections cost about 1 ms of
+  CPU each in docker-proxy, at 4 attempts per user request that alone is
+  more than one core, so everything stays slow and keeps timing out.
+- **Caches**, as in the services' code. One memcached GetMulti per cache
+  read (no context: it cannot be cancelled); misses go to MongoDB, rate
+  and profile one query per missing hotel concurrently, reservation
+  capacities one `$in` query; reservation counts only go to MongoDB when
+  GetMulti returns ErrCacheMiss, which it does not for partial misses, so
+  they cost nothing and are never filled. After the query the handler goes
+  on and a goroutine sets the keys (`go MemcClient.Set`). Reservation reads
+  two caches on the same memcached (`reserve_cap`, `reserve`). A large
+  reply needs several TCP round trips from an idle connection (slow start,
+  10 segments doubling); this matters only under injected latency: the rate
+  service stores all 28 rate plans under every hotel key
+  (`value_bytes` 5300), so a 5-key GetMulti needs 2 round trips. `flush`
+  empties the caches of one memcached.
 - **MongoDB**: a per-service connection pool (`mongo.pool`), non-CPU
-  latency (`io_ms`, plus `slow.extra_ms` while the toxiproxy-style `slow`
-  trigger is on), then CPU on the shared pool. A request context abandons
-  the wait but mongod finishes the work; services in `mongo.ctx_todo` (rate,
-  which uses `context.TODO()`) wait it out.
+  latency (`io_ms`), the query's CPU on mongod, then any injected latency.
+  A request context abandons the wait but mongod finishes the work;
+  services in `mongo.ctx_todo` wait it out (all three: every query in
+  rate, profile and reservation uses `context.TODO()`).
 - **Cancellation and dead work**: with `cancel_propagation` (gRPC and an HTTP
   disconnect both do this) a caller giving up cancels the callee: queued
   waiters leave and later calls fail fast, but CPU already started runs to
-  completion. With it off, abandoned requests keep running until their own
-  deadline (if any). `DEADLINE=on` drops expired requests at admission and
-  after queueing.
+  completion, and memcached and MongoDB calls (no context) run on.
+  `DEADLINE=on` drops expired requests at admission and after queueing.
 - **Users**: cmd/loadgen's behavior. Open loop (`constant`, its default, or
   `poisson`), rate `load.rps` or `load.x` times `capacity_rps`, a schedule
   in multiples of capacity (`load.steps=0:0.7;30:3`) or in the loadgen's
@@ -111,12 +137,15 @@ the library draws those from the global generator.
   full-jitter backoff on top of any honored pushback, and optional honoring
   of the no-retry marker.
 - **Faults**: `faults` is a timeline in bench/lcbench.py's language,
-  `[{"t":30,"fault":"flush:rate"},{"t":31,"fault":"latency:mongo-rate:100"},{"t":50,"fault":"clear"}]`:
-  `flush:<rate|profile|reserve>` empties a cache, `latency:<proxy>:<ms>`
-  delays every response from `mongo-<service>` or `memc-<cache>`,
+  `[{"t":30,"fault":"flush:rate"},{"t":31,"fault":"latency:memc-rate:200"},{"t":50,"fault":"clear"}]`:
+  `flush:<rate|profile|reserve>` empties a memcached,
+  `latency:<target>:<ms>` delays every reply from `mongo-<service>` or
+  `memc-<cache>` (toxiproxy or netem; per TCP round trip for memcached),
   `down:`/`up:` refuse connections (MongoDB errors, memcached misses),
-  `clear` ends all. `cpu:` squeezes are not modeled and are listed in the
-  replay output.
+  `hog:<n>` and `hogw:<n>` start a busy-loop container with n threads at
+  weight 1024 or `hogw_weight` (20480, its --cpu-shares), `clear` ends all.
+  Hogs need `cpu=procs`. `cpu:` squeezes are not modeled and are listed in
+  the replay output.
 
 ## Configuration
 
@@ -157,40 +186,46 @@ never is) and `totals` over the whole run in the loadgen's categories
 The default parameters are **`params.calibrated.json`**, fitted to the
 measured runs on the mini PC (2-vCPU WSL2 VM, everything including the
 load generator on it). `params.json` is kept as the uncalibrated
-placeholder (guessed costs, `capacity_rps` 1600 = its own simulated peak);
-the behavior tests in `sim_test.go` run on it, and `Placeholder()` returns
-it. Pass `-params sim/params.json` to use it from the CLI.
+placeholder (guessed costs, `capacity_rps` 1600 = its own simulated peak,
+no connection layer); the behavior tests in `sim_test.go` run on it, and
+`Placeholder()` returns it. Pass `-params sim/params.json` to use it from
+the CLI.
 
-Inputs used (all with no LoadControl and cmd/loadgen defaults: evenly
+Fitted inputs (all with no LoadControl and cmd/loadgen defaults: evenly
 spaced arrivals, 1 s timeout, no retries, 500 ms SLO):
 
 1. **Capacity 400 req/s**: the highest clean no-control goodput in
    `results/exp0_capacity.jsonl` (400 offered gives 398.2 and 398.6 good/s;
    450 gives 360 and 412; 500 gives 189).
-2. **Mean latency per request type at low load.** Only the 300 req/s runs
-   record per-type latency, and at 300 req/s it is mostly queueing. The two
-   runs also disagree by up to 4x (the 02:26 one had 187 timeouts and is
-   disturbed), so the clean 02:32 run's means (search 39.741, recommend
-   13.974, login 6.993, reserve 47.643 ms) are scaled by 0.2528, the ratio of
-   the overall p50 at 50 req/s (5.333 ms) to that at 300 req/s (21.094 ms),
-   giving estimated 50 req/s means of 10.05, 3.53, 1.77 and 12.05 ms.
-   Fitting the raw 300 req/s means directly does not work: the model at
-   300 req/s (utilization about 0.75) queues far less than the real system,
-   so the fit pushes almost 6 ms of fixed delay per hop into the model.
-   Replace this input with `results/exp7_overhead_e2e.jsonl` (100 req/s)
-   once it exists.
-3. **hidden_ms 0.5**: CPU per user attempt outside the service handlers
-   (load generator, kernel TCP and HTTP, Docker networking), paid by shed
-   attempts too. No-control runs cannot separate it from handler CPU; runs
-   that shed can. It was chosen from {0, 0.5, 1.0, 1.5} by replay error on
+2. **Mean latency per request type at 100 req/s**, from
+   `results/exp7_overhead_e2e.jsonl` off-0.25x: search 9.221, recommend
+   4.283, login 2.579, reserve 9.467 ms. (The previous calibration used
+   estimates scaled from a 300 req/s run: 10.05, 3.53, 1.77, 12.05.)
+3. **hidden_ms 1.0**: CPU per user attempt outside the service handlers
+   (load generator, kernel TCP and HTTP), paid by shed attempts too.
+   No-control runs cannot separate it from handler CPU; runs that shed
+   can. It was chosen from {0, 0.5, 1.0} by mean absolute replay error on
    `exp1_fixedconc_sweep` and `tuning`, which makes those two experiments
    calibration data, not validation.
 
+Set from evidence, not fitted to goodput:
+
+- **conn.new_ms 1.0**: docker-proxy CPU per new connection. In the
+  collapsed exp3 runs docker-proxy shows 65% to 71% of a core averaged over
+  its whole life (about 185 s) after carrying 70k to 130k connections:
+  0.95 to 1.75 ms each. The low end is used. In healthy runs it stays
+  under 5%, so `conn.req_ms` 0.05.
+- **Cache shapes and sizes** from the service code (see The model).
+
 ```
-lcsim calibrate -capacity 400 -hidden-ms 0.5 -lowload-rps 50 \
-  -lat search=10.05,recommend=3.53,login=1.77,reserve=12.05 \
-  -config load.process=constant,cpu=procs -out sim/params.calibrated.json
+lcsim calibrate -capacity 400 -hidden-ms 1.0 -lowload-rps 100 \
+  -lat search=9.221,recommend=4.283,login=2.579,reserve=9.467 \
+  -config load.process=constant -out sim/params.calibrated.json
 ```
+
+(run from a params file that already has `cpu`, `conn` and `caches` as in
+`params.calibrated.json`; calibration only moves the CPU costs, `net_ms`
+and `hidden_ms`.)
 
 Procedure (`calibrate.go`):
 
@@ -207,10 +242,8 @@ Procedure (`calibrate.go`):
    (`net_ms`) takes the level by least squares.
 3. Re-check the peak.
 
-Result: `net_ms` 0.62 per hop, low-load means within 1% for search,
-recommend and reserve and 3% for login, simulated peak 395 req/s. The same procedure
-under `cpu=ps` converges to identical costs, so `-config cpu=ps` with this
-file is the earlier processor-sharing calibration.
+Result: `net_ms` 0.70 per hop, the four 100 req/s means within 1% (login
+6%), simulated peak 403 req/s.
 
 ## Validation against measured runs
 
@@ -220,95 +253,113 @@ rate or schedule, duration, fault timeline, and the user flags parsed from
 100 req/s is simulated and not reported. It runs with the loadgen's seed
 and writes measured against simulated per run: offered, good, slow, shed,
 error and timeout per second, and for runs with faults the recovery time
-computed exactly as `bench/lcnumbers.py` `recovery()` does, on both series.
+computed exactly as `bench/numbers.py` `recovery()` does, on both series.
 One parameter set for every run; nothing is tuned per run.
 
 Contaminated runs are written but flagged (`contaminated`) and left out of
-the error statistics, by the rule of `bench/lcnumbers.py` `clean()`: a peer
-lock before, during or after the run, a service restart, or Windows CPU at
-90% or more just before or after it. `-exclude exp/name[@time-prefix],...`
-flags more by hand. To rerun over whatever exists:
+the error statistics, by the rule of the bench scripts' `clean()` (peer
+lock, service restart, host saturated before, after or during the run);
+`-exclude exp/name[@time-prefix],...` flags more by hand. Kubernetes runs
+(`k8s_*`) are skipped by default: they are a different deployment. To rerun
+over whatever exists:
 
 ```
 go build -o build/lcsim.exe ./cmd/lcsim
-build/lcsim.exe replay -exclude exp3/off-userretry-0.7x -out results/sim_replay.jsonl results/*.jsonl
+build/lcsim.exe replay -parallel 4 -exclude exp3/off-userretry-0.7x -out results/sim_replay.jsonl results/*.jsonl
 ```
 
-`results/sim_replay*` inputs are skipped. The error table goes to stderr.
-`exp3/off-userretry-0.7x` passes the host rule (86.9% before) but was
-already broken at second 0 (p50 657 ms, Windows at 87%), so it is
-excluded by hand until it is rerun. Excluded now: that run, the exp0
-off-400 run with a peer lock, and fixedconc64/128 (host at 100%).
+`-seconds f.jsonl` also writes each run's simulated per-second series.
 
-Goodput error per clean run, `results/sim_replay.jsonl`, 2026-10-05,
-before (`cpu=ps`) and after (`cpu=procs`, the default) the two-level CPU
-model, same calibration procedure and inputs. Relative error only where
-measured goodput is at least 5 req/s.
+### Results
 
-| experiment | clean runs | median abs err good/s, ps / procs | median rel, ps / procs | max rel, ps / procs | within 10%, ps / procs | role |
-|---|---|---|---|---|---|---|
-| exp0 no control | 18 | 7.5 / 2.9 | 2% / 1% | 91% / 75% | 13 / 15 of 18 | calibration |
-| exp1 goodput 1x to 3x | 18 | 52.2 / 45.6 | 18% / 13% | 92% / 79% | 4 / 5 of 17 | validation |
-| exp1sweep fixed limit at 2x | 5 | 66.7 / 66.3 | 35% / 34% | 57% / 56% | 1 / 1 of 5 | calibration (hidden_ms) |
-| tuning, full config | 6 | 20.4 / 14.1 | 7% / 5% | 17% / 15% | 5 / 5 of 6 | calibration (hidden_ms) |
-| exp3 full config, user retries, trigger | 1 | 25.0 / 25.0 | 10% / 10% | 10% / 10% | 1 / 1 | validation |
-| all (abs and rel over the 47 with measured >= 5 good/s) | 48 | 32.7 / 22.6 | 9.9% / 8.4% | 92% / 79% | 24 / 27 of 47 | |
+`results/sim_replay.jsonl`, 2026-10-05, 199 runs, 165 clean with measured
+goodput of at least 5 req/s. "Before" is the previous model (two-level CPU
+with equal shares per thread, no connection layer, one memcached round
+trip per read, rate queries in sequence) as the coordinator replayed it
+with its calibration; "after" is the current default.
 
-The mean absolute error is the same for both (52 good/s): the two-level
-model wins where the old one was worst and loses elsewhere.
+| experiment | clean runs | median rel err, before / after | within 10%, before / after | median abs err good/s, before / after |
+|---|---|---|---|---|
+| exp0 capacity, no control | 15 | 0.6% / 0.5% | 12 / 11 of 15 | 2.5 / 1.8 |
+| exp1 goodput 1x to 4x | 34 | 12.5% / 13.0% | 11 / 13 of 31 | 41.5 / 43.1 |
+| exp1sweep fixed limits | 13 | 34% / 38% | 1 / 2 of 13 | 91 / 106 |
+| exp2 priority | 27 | 11.3% / 10.9% | 9 / 9 of 23 | 41.2 / 36.8 |
+| exp3 metastable | 22 | 6.7% / 2.4% | 13 / 14 of 22 | 16.6 / 5.1 |
+| exp4 amplification | 11 | 25% / 25% | 0 / 0 of 11 | 23.9 / 23.9 |
+| exp5 false shedding | 19 | 0.7% / 0.7% | 16 / 15 of 19 | 1.4 / 1.4 |
+| exp6 algorithms | 13 | 17% / 24% | 3 / 3 of 12 | 42.4 / 58.6 |
+| exp7 overhead | 2 | 0% / 0% | 2 / 2 | 0 / 0 |
+| exp8 capacity shift (hog) | 8 | 47% / 13% | 2 / 3 of 8 | 114 / 31 |
+| tuning | 6 | 4.6% / 7.3% | 5 / 4 of 6 | 14.1 / 20.4 |
+| wrk2 cross-check | 3 | 0% / 0% | 3 / 3 | 0 / 0 |
+| **all** | 165 | **11.0% / 10.7%** | **77 / 79** | |
 
-Better with `procs`:
+Recovery (runs with faults, numbers.py's definition): measured and
+simulated agree on "recovers" against "never recovers" in 21 of 37 runs,
+before 17. Of the 9 measured never-recovering runs, the model now never
+recovers in 6, before in none.
 
-- **Deep overload with no control.** exp0 at 600 and 800 req/s: 41% and
-  91% error under `ps`, 8% and 6% under `procs` (sim 126 and 119 against
-  measured 138 and 112 good/s). exp1 off-1.5x and off-2x: 52% and 92%
-  under `ps`, 24% and 6% under `procs`. Processor sharing makes every
-  request equally late; with per-process run queues and runnext, the
-  newest requests get through and old ones starve, which is what the real
-  system does (successes with a p50 of about 200 ms while most requests
-  time out).
+### What the model now captures
 
-Worse with `procs`:
+- **The metastable failures in exp3.** With users retrying 3 times on a
+  1 s timeout at 0.7x, a cold cache plus 200 ms on every memcached reply,
+  or a weighted CPU hog, leaves the measured system at zero goodput with
+  all 1120 attempts per second timing out for the rest of the run. The
+  model now does the same in all four off/naive memcached runs and all
+  three non-limited hogw runs, while the full LoadControl configuration
+  recovers in both (2 to 3 s, measured 2 s), and the unweighted `hog` does
+  not tip anything (measured the same). The mechanism, from the records
+  and the code:
+  1. Under 200 ms netem a search needs about 1 s: rate's GetMulti takes two
+     round trips because every rate value holds all 28 rate plans
+     (about 27 KB for 5 hotels, more than the initial congestion window),
+     then one each for profile and reservation's two reads. Searches start
+     to hit the 1 s client timeout; recommends (one memcached read) still
+     succeed, which is the 100 to 120 good/s the real system shows during
+     the trigger.
+  2. Every attempt that times out closes its keep-alive connection, so
+     each retry opens a new one through docker-proxy, Docker's userland
+     proxy for the published port. In the collapsed runs the frontend saw
+     only 45% of the attempts, and docker-proxy averaged 65% to 71% of a
+     core over its life, against under 5% in healthy runs: about 1 ms of
+     CPU per connection.
+  3. At 4 attempts per user request that is more than one core of
+     docker-proxy alone, on a 2-vCPU VM where every container gets an equal
+     share. Requests wait behind connection setups, time out, retry on new
+     connections: the state sustains itself after the trigger is gone.
+     Fast 503s from the limiter keep connections alive, which is why the
+     full configuration never enters it.
+- **CPU hogs** (`hog`, `hogw`): exp8 went from 47% to 13% median error,
+  because a weight-20480 container now takes a core and a weight-1024 one
+  takes its share.
 
-- **Just past the knee with no control.** exp0 at 450 req/s: sim 104
-  against measured 360 and 412 (71% and 75%; `ps` 50% and 56%); 500 req/s:
-  43% (`ps` 17%). Both models have a sharp knee at the calibrated 400
-  req/s, and the real system degrades gently between 400 and 500.
-- **A rate limit at exactly the capacity (exp1 ratelimit, 400 req/s).** At
-  1.5x and 2x the real system kept 381 and 385 good/s; the models give 176
-  and 153 (`ps`) and 120 and 82 (`procs`). 400 admitted req/s sits on the
-  model's knee, so any extra CPU from the rejected half tips it over; the
-  real throughput limit is higher than the 400 req/s goodput peak.
-- **No control at 3x (exp1 off-3x): measured 2.7, `procs` 87, `ps` 2.9
-  good/s.** The two-level model keeps too much goodput when load is far
-  above capacity (not in the relative statistics, since measured is under
-  5 req/s).
+### What it still misses
 
-Unchanged, and still the largest errors:
-
-- **Fixed concurrency 2 to 8 and the limiters at 1.5x are 35% to 58% too
-  optimistic** (fixedconc-1.5x, gradient2-1.5x, fixedconc2/4/8-2x). Measured
-  goodput rises slowly with the limit; in the model a few requests in
-  flight saturate the CPU. More `hidden_ms` fixes the fixed-limit sweep
-  but breaks the full config at 3x, so no single per-attempt cost fits
-  both. Real per-request cost seems to grow with concurrency in a way
-  neither CPU model has.
-- **exp1 off-1x: measured 313, sim 396 good/s.** The measured run is below
-  every exp0 run at the same 400 req/s (394 to 399); run-to-run variance of
-  the real system that one parameter set cannot follow.
-- **Below capacity with the full config (0.75x) the model sheds nothing;
-  the real system sheds 2% to 7%.** Real latency is noisier than
-  exponential service times and Gradient2 reads the noise as overload. The
-  model will understate false shedding (exp5).
-
-Capacity sensitivity (not adopted, since the procedure takes the measured
-400 req/s): calibrating `procs` to 440 or 460 req/s instead moves the knee
-toward the real one and fixes the rate-limit runs (460: ratelimit-2x 4%,
-exp0 450 9% and 25%) and lowers the mean absolute error from 52 to 47
-(440) and 43 (460) good/s, at the cost of the fixed-limit sweep (42% to
-45% median). The real throughput limit is above the 400 req/s goodput
-peak; a calibration target defined on throughput rather than goodput is
-the next thing to try.
+- **Spontaneous collapses.** Two of the four measured no-trigger runs
+  (off-notrigger-0.7x and off-notrigger-0.7x-memc) and the cold-cache-only
+  naive run, long after its trigger had passed, started degrading at 57 to
+  110 s and reached zero goodput at 102 to 136 s; the model never does,
+  because nothing in it produces that large a fluctuation (or a slow
+  build-up, which the data cannot rule out).
+- **Knife-edge cases go the wrong way.** budget-userretry-0.7x-memc
+  recovered 8 s after the trigger in the real system (its per-hop 250 ms
+  timeouts turned slow searches into fast 500s, which keep connections
+  alive); in the model it collapses. The cold-cache-only naive run
+  collapses in the model at the trigger, not about 75 s later.
+- **The knee is still too sharp.** Just above the calibrated 400 req/s the
+  model collapses where the real system degrades slowly: no control at
+  450 req/s is 71 against 360 and 412 good/s; a rate limit at exactly
+  400 req/s at 1.5x to 3x is 50 to 113 against 340 to 385; exp8's 0.9x with
+  an unweighted hog is 201 against 351. The connection layer made this
+  worse, because any timeout now costs a reconnection. The real throughput
+  limit is above the 400 req/s goodput peak.
+- **Fixed concurrency limits at 2x and 3x** are still 33% to 75% off in
+  both directions (exp1sweep), and AIMD and Vegas at 3x (exp6) 38% to 50%:
+  per-request cost seems to grow with concurrency in a way the model does
+  not have.
+- **exp4** runs are 25% to 35% low throughout (unchanged).
+- **False shedding below capacity** (exp5): the model sheds less than the
+  real system, whose latency is noisier.
 
 ## What the placeholder model shows
 
@@ -318,7 +369,7 @@ The behavior tests run under both `cpu=ps` and `cpu=procs`. Under `procs`
 the same tests pass with one threshold changed: at 3x with no control the
 two-level model keeps 0.36x of capacity instead of 0.00x (the measured
 system kept 0.28x at 2x), so the test bound for "collapses" moved from 0.3x
-to 0.4x. With naive retries after the trigger it settles at 23% of the
+to 0.4x. With naive retries after the trigger it settles at about 10% of the
 pre-trigger goodput instead of 0 and never recovers; the controlled
 configuration recovers at once. The bullets below are the `ps` numbers.
 

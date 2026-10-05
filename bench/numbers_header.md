@@ -40,8 +40,21 @@ cliff is large (e.g. 360 and 412 good/s at the same 450 req/s offered).
 | 14 | Middleware cost per call, every piece on | **+17.6 us** in process (bufconn, 47.8 to 65.4 us), +42 us over loopback TCP; admission path alone 609 ns vs 250 ns bare | `exp7_microbench.jsonl` |
 | 15 | Same experiments on Kubernetes (one-node k3d, same VM) | at 1,200 req/s offered: no control **0.4 req/s**, LoadControl **209 req/s** (2 runs each; k3s itself shares the 2 vCPUs, so capacity there is lower and was not remeasured). Metastable trigger: no control never recovered (2 of 2); LoadControl recovered in **1 s and 29 s** | `k8s_exp1_goodput.jsonl`, `k8s_exp3_metastable.jsonl` |
 | 16 | Load generator vs the benchmark's own wrk2 | throughput within 1.5% at 200, 300 and 400 req/s; cmd/loadgen reports higher latency (p99 696 vs 451 ms at 400), plausibly because it opens a connection per concurrent request where wrk2 keeps 64 | `wrk2_crosscheck.jsonl` |
-| 17 | Simulator against measured runs | median relative goodput error **11%** over 165 clean runs (77 within 10%); 1% at or below capacity with no control, 34% for small static limits; it does **not** reproduce the measured metastable failures (see sim/README.md) | `sim_replay.jsonl` |
+| 17 | Simulator against measured runs | median relative goodput error **10.7%** over 165 clean runs (79 within 10%); 0.5% at or below capacity with no control, 2.4% on exp3, 38% for small static limits. It agrees with the measured outcome (recovers or never recovers) in 21 of 37 fault runs and reproduces 6 of the 9 never-recovering runs; it does not produce the spontaneous collapses (sim/README.md) | `sim_replay.jsonl` |
 | 18 | Bugs logged | **12**, each with what found it | `BUG_LOG.md` |
+
+## What sustains the bad state here (read before claiming the metastable result)
+
+The simulator investigation traced the sustaining loop to connection churn: every
+timed-out attempt closes its keep-alive connection, so each user retry opens a new
+connection through Docker's userland proxy in front of the frontend's published port
+(docker-proxy used 65-71% of a core in collapsed runs, under 5% in healthy ones), and at
+four attempts per request connection setup alone needs more than a core. LoadControl's
+fast 503s keep connections alive, which is part of why it never enters the state. So the
+loop is retries plus their client-side connection cost, not retries alone. The k3d runs,
+which go through k3d's load balancer instead of docker-proxy, also never recovered without
+control (2 of 2), so the effect is not specific to docker-proxy, but its size is a
+property of this harness.
 
 ## What is not quotable
 

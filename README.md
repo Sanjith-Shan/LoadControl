@@ -84,9 +84,13 @@ recovered in 1 s and 29 s.
 
 **The simulator** (`sim/`) runs the library's own policy code on a virtual
 clock and replays every recorded run with one calibrated parameter set:
-median goodput error 11% over 165 runs, 1% at or below capacity. It is not
-trusted in deep overload just past the capacity cliff, and it does not
-reproduce the measured metastable failures; [sim/README.md](sim/README.md)
+median goodput error 10.7% over 165 runs, 0.5% at or below capacity. Making
+it reproduce the never-recovering runs is how the sustaining mechanism was
+found: each timed-out retry opens a new client connection through Docker's
+port proxy, and that setup cost alone keeps the CPU saturated, while
+LoadControl's fast rejections keep connections alive (NUMBERS.md has the
+caveat this implies). It is not trusted just past the capacity cliff and
+does not produce the spontaneous collapses; [sim/README.md](sim/README.md)
 says what it captures and what it misses.
 
 ## The pieces

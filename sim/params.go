@@ -76,10 +76,11 @@ type Params struct {
 }
 
 type CacheParams struct {
-	Keys   int    `json:"keys"`             // key space
-	PerReq int    `json:"per_req"`          // keys read per request (one GetMulti)
-	Server string `json:"server,omitempty"` // memcached instance (flush and latency target); default the cache name
-	Query  string `json:"query,omitempty"`  // misses as: single (one query), sequential or parallel (one per key)
+	Keys       int    `json:"keys"`                  // key space
+	PerReq     int    `json:"per_req"`               // keys read per request (one GetMulti)
+	Server     string `json:"server,omitempty"`      // memcached instance (flush and latency target); default the cache name
+	Query      string `json:"query,omitempty"`       // misses as: single (one query), parallel or sequential (one per key), none (not queried)
+	ValueBytes int    `json:"value_bytes,omitempty"` // size of one cached value: a large GetMulti reply needs several TCP round trips
 }
 
 // ConnParams model the HTTP connections between the load generator and the

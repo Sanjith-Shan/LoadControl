@@ -1,11 +1,12 @@
 {
   "_notes": [
-    "Calibrated 2026-10-05 with cpu=procs (two-level CPU model), as described in sim/README.md (Calibration).",
-    "Command: lcsim calibrate -capacity 400 -hidden-ms 0.5 -lat search=10.05,recommend=3.53,login=1.77,reserve=12.05 -lowload-rps 50 -config load.process=constant,cpu=procs",
-    "capacity 400 req/s: highest clean no-control goodput in results/exp0_capacity.jsonl (400 offered: 398.2 and 398.6 good/s).",
-    "Latencies: per-type means of the clean 300 req/s exp0 run (02:32: search 39.741, recommend 13.974, login 6.993, reserve 47.643 ms) scaled by 0.2528, the ratio of overall p50 at 50 req/s (5.333 ms) to that at 300 req/s (21.094 ms).",
-    "hidden_ms 0.5 chosen from {0, 0.5, 1.0, 1.5} by replay error on exp1_fixedconc_sweep and tuning (calibration data, not validation).",
-    "The previous processor-sharing calibration is kept in git history; cpu=ps with these parameters is not calibrated."
+    "Calibrated 2026-10-05 (third revision: connection layer, CFS weights, memcached reply round trips), see sim/README.md (Calibration).",
+    "Command: lcsim calibrate -capacity 400 -hidden-ms 1.0 -lat search=9.221,recommend=4.283,login=2.579,reserve=9.467 -lowload-rps 100 -config load.process=constant",
+    "capacity 400 req/s: highest clean no-control goodput in results/exp0_capacity.jsonl.",
+    "Latencies: per-type means of results/exp7_overhead_e2e.jsonl off-0.25x (100 req/s, no control).",
+    "hidden_ms 1.0 chosen from {0, 0.5, 1.0} by mean absolute replay error on exp1_fixedconc_sweep and tuning (calibration data, not validation).",
+    "conn.new_ms 1.0: docker-proxy CPU per connection estimated from its process CPU in the collapsed exp3 runs (0.95 to 1.75 ms); not fitted to goodput.",
+    "caches.rate.value_bytes 5300: 28 rate plans of about 190 bytes each, all stored under every hotel key by the rate service; profile 700."
   ],
   "seed": 1,
   "duration_s": 60,
@@ -15,56 +16,65 @@
   "dist": "exp",
   "cv": 1,
   "capacity_rps": 400,
-  "net_ms": 0.6204965517241413,
-  "rpc_server_ms": 0.14441019659999998,
-  "rpc_client_ms": 0.07220509829999999,
-  "hidden_ms": 0.5,
+  "net_ms": 0.6966344827586249,
+  "rpc_server_ms": 0.11774540616681198,
+  "rpc_client_ms": 0.05887270308340599,
+  "hidden_ms": 1,
   "handlers": {
-    "frontend.recommend": 0.37072693199309714,
-    "frontend.reserve": 4.25052876330646,
-    "frontend.search": 1.6580574213000359,
-    "frontend.user": 0.0468383465078379,
-    "geo.nearby": 1.184326729500025,
-    "profile.get": 0.24195366358181422,
-    "rate.get": 0.4737306918000105,
-    "recommendation.get": 0.3089391099942476,
-    "reservation.check": 0.5684768301600123,
-    "reservation.make": 2.12526438165323,
-    "search.nearby": 0.37898455344000803,
-    "user.check": 0.18333768427879243
+    "frontend.recommend": 0.6738618960902922,
+    "frontend.reserve": 2.5309274976490053,
+    "frontend.search": 1.1353751924109965,
+    "frontend.user": 0.30651822009474056,
+    "geo.nearby": 0.8109822802935682,
+    "profile.get": 0.26993580893594005,
+    "rate.get": 0.3243929121174276,
+    "recommendation.get": 0.5615515800752433,
+    "reservation.check": 0.389271494540913,
+    "reservation.make": 1.2654637488245026,
+    "search.nearby": 0.2595143296939418,
+    "user.check": 0.36190741714780944
   },
   "caches": {
-    "rate": {
-      "keys": 80,
-      "per_req": 5
-    },
     "profile": {
       "keys": 80,
-      "per_req": 5
+      "per_req": 5,
+      "value_bytes": 700
     },
-    "reserve_cap": {
+    "rate": {
       "keys": 80,
       "per_req": 5,
-      "server": "reserve"
+      "value_bytes": 5300
     },
     "reserve": {
       "keys": 1200,
       "per_req": 22,
       "server": "reserve"
+    },
+    "reserve_cap": {
+      "keys": 80,
+      "per_req": 5,
+      "server": "reserve"
     }
   },
-  "memc_ms": 0.07220509829999999,
-  "memc_key_ms": 0.018051274574999998,
+  "memc_ms": 0.05887270308340599,
+  "memc_key_ms": 0.014718175770851497,
   "mongo": {
-    "op_ms": 2.1661529489999998,
-    "key_ms": 0.18051274575,
+    "op_ms": 1.7661810925021797,
+    "key_ms": 0.147181757708515,
     "io_ms": 0.2,
     "pool": 100,
     "ctx_todo": {
-      "rate": true,
       "profile": true,
+      "rate": true,
       "reservation": true
     }
+  },
+  "conn": {
+    "proxy": true,
+    "new_ms": 1,
+    "req_ms": 0.05,
+    "frontend_new_ms": 0.05,
+    "max_idle": 2000
   },
   "max_concurrency": {},
   "cancel_propagation": true,
@@ -108,12 +118,5 @@
     "at": 0,
     "dur": 0
   },
-  "env": {},
-  "conn": {
-    "proxy": true,
-    "new_ms": 1.0,
-    "req_ms": 0.05,
-    "frontend_new_ms": 0.05,
-    "max_idle": 2000
-  }
+  "env": {}
 }
