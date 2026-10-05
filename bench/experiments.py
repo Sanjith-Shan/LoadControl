@@ -81,12 +81,12 @@ def baselines(cap, conc):
 
 
 def exp1(a):
-    out = os.path.join(REPO, "results", "exp1_goodput.jsonl")
+    out = a.out or os.path.join(REPO, "results", "exp1_goodput.jsonl")
     cfgs = baselines(a.cap, a.conc)
     cfgs["gradient2"] = (merge(lim("gradient2"), DEADLINE), "Gradient2 at every service + deadline drop")
     cfgs["full"] = (full(), "LoadControl, every piece on")
     for rep in range(a.reps):
-        for x in [1, 1.5, 2, 3, 4]:
+        for x in (a.loads or [1, 1.5, 2, 3, 4]):
             for name, (env, c) in cfgs.items():
                 if a.only and name not in a.only:
                     continue
@@ -95,14 +95,14 @@ def exp1(a):
 
 def exp_conc_sweep(a):
     """Pick the static concurrency baseline fairly: the best fixed limit at 2x."""
-    out = os.path.join(REPO, "results", "exp1_fixedconc_sweep.jsonl")
+    out = a.out or os.path.join(REPO, "results", "exp1_fixedconc_sweep.jsonl")
     for n in [2, 4, 8, 16, 32]:
         run("exp1sweep", f"fixedconc{n}-2x", {"LC_FRONTEND_LIMIT": f"fixed:{n}"},
             f"static concurrency limit {n} at the frontend", out, rate=round(a.cap * 2))
 
 
 def exp2(a):
-    out = os.path.join(REPO, "results", "exp2_priority.jsonl")
+    out = a.out or os.path.join(REPO, "results", "exp2_priority.jsonl")
     cfgs = baselines(a.cap, a.conc)
     cfgs.update({
         "gradient2-notiers": (merge(lim("gradient2"), DEADLINE), "Gradient2 + deadline, tiers ignored"),
@@ -127,7 +127,7 @@ USER_RETRIES = "-retries 3 -timeout 1s"
 
 
 def exp3(a):
-    out = os.path.join(REPO, "results", "exp3_metastable.jsonl")
+    out = a.out or os.path.join(REPO, "results", "exp3_metastable.jsonl")
     x = a.x or 0.7
     faults = TRIGGER.format(ms=a.slow_ms)
     cfgs = {
@@ -149,7 +149,7 @@ def exp3(a):
 def exp4(a):
     """Retry amplification during a dependency fault: memcached for rate gets
     slow enough that every rate call misses its 250 ms per-try timeout."""
-    out = os.path.join(REPO, "results", "exp4_amplification.jsonl")
+    out = a.out or os.path.join(REPO, "results", "exp4_amplification.jsonl")
     faults = f"10s=latency:memc-rate:{a.slow_ms},50s=clear"
     lg = "-retries 2 -timeout 3s"
     cfgs = {
@@ -171,7 +171,7 @@ def exp4(a):
 
 
 def exp5(a):
-    out = os.path.join(REPO, "results", "exp5_false_shedding.jsonl")
+    out = a.out or os.path.join(REPO, "results", "exp5_false_shedding.jsonl")
     cfgs = {
         "full": (full(), "LoadControl, every piece on"),
         "aimd": (merge(lim("aimd"), DEADLINE), "AIMD + deadline"),
@@ -187,7 +187,7 @@ def exp5(a):
 
 
 def exp6(a):
-    out = os.path.join(REPO, "results", "exp6_algorithms.jsonl")
+    out = a.out or os.path.join(REPO, "results", "exp6_algorithms.jsonl")
     thr_alone = {"LC_FRONTEND_THROTTLE": "2", "LC_FRONTEND_THROTTLE_WINDOW_S": "30",
                  "LC_FRONTEND_THROTTLE_FAILURES": "on", "LC_FRONTEND_PER_TRY_TIMEOUT_MS": "500",
                  "LC_FRONTEND_RETRY": "none"}
@@ -207,7 +207,7 @@ def exp6(a):
 
 def exp7(a):
     """End-to-end overhead at low load: everything on but nothing to shed."""
-    out = os.path.join(REPO, "results", "exp7_overhead_e2e.jsonl")
+    out = a.out or os.path.join(REPO, "results", "exp7_overhead_e2e.jsonl")
     for rep in range(a.reps):
         for name, env, c in [("off", {}, "no control"), ("full", full(), "LoadControl, every piece on")]:
             run("exp7", f"{name}-0.25x", env, c, out, rate=round(a.cap * 0.25), duration=120, note=f"rep {rep}")
@@ -222,8 +222,11 @@ def main():
     ap.add_argument("--only", default="")
     ap.add_argument("--x", type=float, default=0)
     ap.add_argument("--slow-ms", type=int, default=100)
+    ap.add_argument("--loads", default="", help="override load multiples, e.g. 3,4")
+    ap.add_argument("--out", default="", help="override the results file")
     a = ap.parse_args()
     a.only = [s for s in a.only.split(",") if s]
+    a.loads = [float(x) if "." in x else int(x) for x in a.loads.split(",") if x]
     globals()[a.exp.replace("-", "_")](a)
 
 

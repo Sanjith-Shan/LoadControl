@@ -279,7 +279,7 @@ func main() {
 		jit := rnd.Uint64()
 		n++
 		st.mu.Lock()
-		st.at(int(intended.Sub(start) / time.Second)).offered++
+		st.at(int(intended.Sub(start)/time.Second)).offered++
 		st.mu.Unlock()
 		wg.Add(1)
 		cur := inflight.Add(1)

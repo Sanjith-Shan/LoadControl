@@ -1,0 +1,373 @@
+diff --git a/Dockerfile b/Dockerfile
+index 06e3a3f..d1cfa1b 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,4 +1,4 @@
+-FROM golang:1.21 as builder
++FROM golang:1.24 AS builder
+ 
+ WORKDIR /workspace
+ 
+@@ -13,6 +13,8 @@ COPY services/ services/
+ COPY tls/ tls/
+ COPY tracing/ tracing/
+ COPY tune/ tune/
++COPY lcwire/ lcwire/
++COPY third_party/ third_party/
+ 
+ COPY config.json config.json
+ 
+diff --git a/dialer/dialer.go b/dialer/dialer.go
+index 720824a..1b3512a 100644
+--- a/dialer/dialer.go
++++ b/dialer/dialer.go
+@@ -1,6 +1,7 @@
+ package dialer
+ 
+ import (
++	"github.com/delimitrou/DeathStarBench/tree/master/hotelReservation/lcwire"
+ 	"fmt"
+ 	"time"
+ 
+@@ -18,7 +19,7 @@ type DialOption func(name string) (grpc.DialOption, error)
+ // WithTracer traces rpc calls
+ func WithTracer(tracer opentracing.Tracer) DialOption {
+ 	return func(name string) (grpc.DialOption, error) {
+-		return grpc.WithUnaryInterceptor(otgrpc.OpenTracingClientInterceptor(tracer)), nil
++		return grpc.WithChainUnaryInterceptor(otgrpc.OpenTracingClientInterceptor(tracer), lcwire.ClientInterceptor(name)), nil
+ 	}
+ }
+ 
+diff --git a/go.mod b/go.mod
+index b2e1d2d..270138d 100644
+--- a/go.mod
++++ b/go.mod
+@@ -21,6 +21,7 @@ require (
+ 
+ require (
+ 	github.com/HdrHistogram/hdrhistogram-go v1.1.2 // indirect
++	github.com/Sanjith-Shan/LoadControl v0.0.0
+ 	github.com/armon/go-metrics v0.4.1 // indirect
+ 	github.com/fatih/color v1.15.0 // indirect
+ 	github.com/go-playground/form v3.1.4+incompatible // indirect
+@@ -59,3 +60,5 @@ require (
+ )
+ 
+ replace github.com/hashicorp/consul => github.com/hashicorp/consul v1.15.7
++
++replace github.com/Sanjith-Shan/LoadControl => ./third_party/loadcontrol
+diff --git a/lcwire/lcwire.go b/lcwire/lcwire.go
+new file mode 100755
+index 0000000..8eab86f
+--- /dev/null
++++ b/lcwire/lcwire.go
+@@ -0,0 +1,81 @@
++// Package lcwire connects the hotelReservation services to LoadControl.
++// It is added to the benchmark by bench/hotel/apply_patch.sh. Every
++// setting comes from LC_* environment variables (see loadcontrol.Env), so
++// one image serves every experiment configuration.
++package lcwire
++
++import (
++	"net/http"
++	"os"
++	"strings"
++	"sync"
++
++	lc "github.com/Sanjith-Shan/LoadControl"
++	"github.com/Sanjith-Shan/LoadControl/lcgrpc"
++	"github.com/Sanjith-Shan/LoadControl/lchttp"
++	"github.com/prometheus/client_golang/prometheus/promhttp"
++	"github.com/rs/zerolog/log"
++	"google.golang.org/grpc"
++)
++
++var (
++	once    sync.Once
++	service string
++	server  *lc.Server
++	metrics *lc.Metrics
++)
++
++// Init records which service this process runs and starts the metrics
++// listener on :9100.
++func Init(name string) {
++	once.Do(func() {
++		service = name
++		metrics = lc.DefaultMetrics()
++		env := lc.FromEnv(name)
++		cfg, err := env.ServerConfig(metrics)
++		if err != nil {
++			log.Fatal().Msgf("loadcontrol config: %v", err)
++		}
++		if cfg.Limiter != nil || cfg.Dagor != nil || cfg.DropExpired || cfg.RateLimit != nil || cfg.DefaultTimeout > 0 || cfg.OneLayer {
++			server = lc.NewServer(cfg)
++		} else {
++			// No admission pieces: still count inbound requests and
++			// propagate priority, so the baseline is measured the same way.
++			server = lc.NewServer(lc.ServerConfig{Name: name, Metrics: metrics})
++		}
++		log.Info().Msgf("loadcontrol %s: %v", name, env.Describe())
++		go func() {
++			mux := http.NewServeMux()
++			mux.Handle("/metrics", promhttp.Handler())
++			_ = http.ListenAndServe(":9100", mux)
++		}()
++	})
++}
++
++// ServerOption returns the interceptor chain for a gRPC server, with
++// tracing first so shed requests still show up in traces.
++func ServerOption(tracing grpc.UnaryServerInterceptor) grpc.ServerOption {
++	return grpc.ChainUnaryInterceptor(tracing, lcgrpc.UnaryServerInterceptor(server, nil))
++}
++
++// ClientInterceptor returns the client interceptor for calls from this
++// service to target (a consul URL or name).
++func ClientInterceptor(target string) grpc.UnaryClientInterceptor {
++	if i := strings.LastIndex(target, "/"); i >= 0 {
++		target = target[i+1:]
++	}
++	cfg, err := lc.FromEnv(service).ClientConfig(target, metrics)
++	if err != nil {
++		log.Fatal().Msgf("loadcontrol client config: %v", err)
++	}
++	return lcgrpc.UnaryClientInterceptor(lc.NewClient(cfg))
++}
++
++// HTTP wraps the frontend's handler.
++func HTTP(h http.Handler) http.Handler { return lchttp.Middleware(server, h) }
++
++func init() {
++	if v := os.Getenv("LC_SERVICE"); v != "" {
++		Init(v)
++	}
++}
+diff --git a/services/attractions/server.go b/services/attractions/server.go
+index dae248d..7ecb564 100644
+--- a/services/attractions/server.go
++++ b/services/attractions/server.go
+@@ -1,6 +1,7 @@
+ package attractions
+ 
+ import (
++	"github.com/delimitrou/DeathStarBench/tree/master/hotelReservation/lcwire"
+ 	"context"
+ 	"fmt"
+ 	"net"
+@@ -74,9 +75,7 @@ func (s *Server) Run() error {
+ 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+ 			PermitWithoutStream: true,
+ 		}),
+-		grpc.UnaryInterceptor(
+-			otgrpc.OpenTracingServerInterceptor(s.Tracer),
+-		),
++		lcwire.ServerOption(otgrpc.OpenTracingServerInterceptor(s.Tracer)),
+ 	}
+ 
+ 	if tlsopt := tls.GetServerOpt(); tlsopt != nil {
+diff --git a/services/frontend/server.go b/services/frontend/server.go
+index e2a32bf..c2ad181 100644
+--- a/services/frontend/server.go
++++ b/services/frontend/server.go
+@@ -1,6 +1,7 @@
+ package frontend
+ 
+ import (
++	"github.com/delimitrou/DeathStarBench/tree/master/hotelReservation/lcwire"
+ 	"embed"
+ 	"encoding/json"
+ 	"fmt"
+@@ -108,7 +109,7 @@ func (s *Server) Run() error {
+ 	tlsconfig := tls.GetHttpsOpt()
+ 	srv := &http.Server{
+ 		Addr:    fmt.Sprintf(":%d", s.Port),
+-		Handler: mux,
++		Handler: lcwire.HTTP(mux),
+ 	}
+ 	if tlsconfig != nil {
+ 		log.Info().Msg("Serving https")
+diff --git a/services/geo/server.go b/services/geo/server.go
+index 8e158d5..3f06dca 100644
+--- a/services/geo/server.go
++++ b/services/geo/server.go
+@@ -1,6 +1,7 @@
+ package geo
+ 
+ import (
++	"github.com/delimitrou/DeathStarBench/tree/master/hotelReservation/lcwire"
+ 	"context"
+ 	"fmt"
+ 	"net"
+@@ -59,9 +60,7 @@ func (s *Server) Run() error {
+ 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+ 			PermitWithoutStream: true,
+ 		}),
+-		grpc.UnaryInterceptor(
+-			otgrpc.OpenTracingServerInterceptor(s.Tracer),
+-		),
++		lcwire.ServerOption(otgrpc.OpenTracingServerInterceptor(s.Tracer)),
+ 	}
+ 
+ 	if tlsopt := tls.GetServerOpt(); tlsopt != nil {
+diff --git a/services/profile/server.go b/services/profile/server.go
+index 2874bb2..c0458ba 100644
+--- a/services/profile/server.go
++++ b/services/profile/server.go
+@@ -1,6 +1,7 @@
+ package profile
+ 
+ import (
++	"github.com/delimitrou/DeathStarBench/tree/master/hotelReservation/lcwire"
+ 	"context"
+ 	"encoding/json"
+ 	"fmt"
+@@ -57,9 +58,7 @@ func (s *Server) Run() error {
+ 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+ 			PermitWithoutStream: true,
+ 		}),
+-		grpc.UnaryInterceptor(
+-			otgrpc.OpenTracingServerInterceptor(s.Tracer),
+-		),
++		lcwire.ServerOption(otgrpc.OpenTracingServerInterceptor(s.Tracer)),
+ 	}
+ 
+ 	if tlsopt := tls.GetServerOpt(); tlsopt != nil {
+diff --git a/services/rate/server.go b/services/rate/server.go
+index 6aadd8a..ef26345 100644
+--- a/services/rate/server.go
++++ b/services/rate/server.go
+@@ -1,6 +1,7 @@
+ package rate
+ 
+ import (
++	"github.com/delimitrou/DeathStarBench/tree/master/hotelReservation/lcwire"
+ 	"context"
+ 	"encoding/json"
+ 	"fmt"
+@@ -57,9 +58,7 @@ func (s *Server) Run() error {
+ 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+ 			PermitWithoutStream: true,
+ 		}),
+-		grpc.UnaryInterceptor(
+-			otgrpc.OpenTracingServerInterceptor(s.Tracer),
+-		),
++		lcwire.ServerOption(otgrpc.OpenTracingServerInterceptor(s.Tracer)),
+ 	}
+ 
+ 	if tlsopt := tls.GetServerOpt(); tlsopt != nil {
+diff --git a/services/recommendation/server.go b/services/recommendation/server.go
+index 3f94cdd..b4c48bb 100644
+--- a/services/recommendation/server.go
++++ b/services/recommendation/server.go
+@@ -1,6 +1,7 @@
+ package recommendation
+ 
+ import (
++	"github.com/delimitrou/DeathStarBench/tree/master/hotelReservation/lcwire"
+ 	"context"
+ 	"fmt"
+ 	"math"
+@@ -56,9 +57,7 @@ func (s *Server) Run() error {
+ 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+ 			PermitWithoutStream: true,
+ 		}),
+-		grpc.UnaryInterceptor(
+-			otgrpc.OpenTracingServerInterceptor(s.Tracer),
+-		),
++		lcwire.ServerOption(otgrpc.OpenTracingServerInterceptor(s.Tracer)),
+ 	}
+ 
+ 	if tlsopt := tls.GetServerOpt(); tlsopt != nil {
+diff --git a/services/reservation/server.go b/services/reservation/server.go
+index f82f52a..5f21217 100644
+--- a/services/reservation/server.go
++++ b/services/reservation/server.go
+@@ -1,6 +1,7 @@
+ package reservation
+ 
+ import (
++	"github.com/delimitrou/DeathStarBench/tree/master/hotelReservation/lcwire"
+ 	"context"
+ 	"fmt"
+ 	"net"
+@@ -56,9 +57,7 @@ func (s *Server) Run() error {
+ 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+ 			PermitWithoutStream: true,
+ 		}),
+-		grpc.UnaryInterceptor(
+-			otgrpc.OpenTracingServerInterceptor(s.Tracer),
+-		),
++		lcwire.ServerOption(otgrpc.OpenTracingServerInterceptor(s.Tracer)),
+ 	}
+ 
+ 	if tlsopt := tls.GetServerOpt(); tlsopt != nil {
+diff --git a/services/review/server.go b/services/review/server.go
+index dfe3265..812f220 100644
+--- a/services/review/server.go
++++ b/services/review/server.go
+@@ -1,6 +1,7 @@
+ package review
+ 
+ import (
++	"github.com/delimitrou/DeathStarBench/tree/master/hotelReservation/lcwire"
+ 	"encoding/json"
+ 	"fmt"
+ 
+@@ -63,9 +64,7 @@ func (s *Server) Run() error {
+ 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+ 			PermitWithoutStream: true,
+ 		}),
+-		grpc.UnaryInterceptor(
+-			otgrpc.OpenTracingServerInterceptor(s.Tracer),
+-		),
++		lcwire.ServerOption(otgrpc.OpenTracingServerInterceptor(s.Tracer)),
+ 	}
+ 
+ 	if tlsopt := tls.GetServerOpt(); tlsopt != nil {
+diff --git a/services/search/server.go b/services/search/server.go
+index 95956da..b369efe 100644
+--- a/services/search/server.go
++++ b/services/search/server.go
+@@ -1,6 +1,7 @@
+ package search
+ 
+ import (
++	"github.com/delimitrou/DeathStarBench/tree/master/hotelReservation/lcwire"
+ 	"fmt"
+ 	"net"
+ 	"time"
+@@ -54,9 +55,7 @@ func (s *Server) Run() error {
+ 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+ 			PermitWithoutStream: true,
+ 		}),
+-		grpc.UnaryInterceptor(
+-			otgrpc.OpenTracingServerInterceptor(s.Tracer),
+-		),
++		lcwire.ServerOption(otgrpc.OpenTracingServerInterceptor(s.Tracer)),
+ 	}
+ 
+ 	if tlsopt := tls.GetServerOpt(); tlsopt != nil {
+diff --git a/services/user/server.go b/services/user/server.go
+index da91ffd..a0b5c6d 100644
+--- a/services/user/server.go
++++ b/services/user/server.go
+@@ -1,6 +1,7 @@
+ package user
+ 
+ import (
++	"github.com/delimitrou/DeathStarBench/tree/master/hotelReservation/lcwire"
+ 	"crypto/sha256"
+ 	"fmt"
+ 	"net"
+@@ -55,9 +56,7 @@ func (s *Server) Run() error {
+ 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+ 			PermitWithoutStream: true,
+ 		}),
+-		grpc.UnaryInterceptor(
+-			otgrpc.OpenTracingServerInterceptor(s.Tracer),
+-		),
++		lcwire.ServerOption(otgrpc.OpenTracingServerInterceptor(s.Tracer)),
+ 	}
+ 
+ 	if tlsopt := tls.GetServerOpt(); tlsopt != nil {

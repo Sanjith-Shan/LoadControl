@@ -15,11 +15,11 @@ got=$(git -C "$DSB" rev-parse HEAD)
 
 rm -rf "$OUT" && mkdir -p "$OUT"
 cp -r "$DSB/hotelReservation/." "$OUT/"
+( cd "$OUT" && git init -q && git add -A && git -c user.email=x -c user.name=x commit -qm upstream )
 mkdir -p "$OUT/third_party/loadcontrol"
 ( cd "$LC" && tar --exclude=./build --exclude=./results --exclude=./bench --exclude=./.git --exclude=./sim --exclude=./cmd -cf - . ) | tar -xf - -C "$OUT/third_party/loadcontrol"
 cp -r "$LC/bench/hotel/_overlay/lcwire" "$OUT/lcwire"
 cd "$OUT"
-git init -q && git add -A && git -c user.email=x -c user.name=x commit -qm upstream
 
 # 1. gRPC servers: tracing interceptor -> tracing + LoadControl chain.
 for f in services/*/server.go; do
