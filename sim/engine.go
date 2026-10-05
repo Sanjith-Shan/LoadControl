@@ -112,25 +112,48 @@ func (s *Sim) step() bool {
 	return true
 }
 
-// cpu is an egalitarian processor-sharing server with C cores: n jobs each
-// progress at min(1, C/n). It tracks v, the service every job has
-// received since the start, so a job of size w that joins at v finishes
-// when v reaches v+w, and only the smallest finish point matters.
+// cpu shares C cores between jobs. In "ps" mode it is an egalitarian
+// processor-sharing server: n jobs each progress at min(1, C/n). In
+// "procs" mode it is two-level, like the real VM: every job belongs to a
+// process (a Go service with GOMAXPROCS Ps, memcached or mongod with a
+// few worker threads); a process runs at most slots jobs at once and
+// queues the rest FIFO, as Go's run queues do, and preempts a running job
+// after a slice of CPU if others wait; the kernel then shares the cores
+// equally between all running jobs (threads), which is processor sharing
+// over the running set. Both track v, the service every running job has
+// received, so a job that joins at v with w left finishes when v reaches
+// v+w and only the smallest finish point matters.
 type cpu struct {
 	cores   float64
-	fcfs    bool // first come first served on C cores instead of processor sharing
+	fcfs    bool // first come first served on C cores instead
+	procs   bool // two-level: per-process FIFO slots, processor sharing between running jobs
+	slice   float64
+	runnext bool
 	running int
 	fifo    []cpuJob // FCFS waiting jobs; vf holds the work
-	v       float64  // attained service per job, ns
+	v       float64  // attained service per running job, ns
 	last    int64
 	busy    float64 // integral of min(n, C) dt, for utilization
 	jobs    []cpuJob
 	seq     uint64
+	waiting int // queued inside processes
+}
+
+// proc is one process in "procs" mode.
+type proc struct {
+	name    string
+	slots   int
+	running int
+	q       []cpuJob // waiting; end holds the work left
+	preempt bool     // Go: preempt after a slice when others wait
+	next    *cpuJob  // Go's runnext slot: the newest readied goroutine runs next
 }
 
 type cpuJob struct {
-	vf   float64
+	vf   float64 // heap key: when this job next needs attention
+	end  float64 // finish point (or, while queued, work left)
 	seq  uint64
+	p    *proc
 	done func()
 }
 
@@ -152,8 +175,9 @@ func (c *cpu) advance(now int64) {
 	c.last = now
 }
 
-// run adds a job of w nanoseconds of CPU; done is posted when it finishes.
-func (s *Sim) run(w float64, done func()) {
+// run adds a job of w nanoseconds of CPU in process p; done is posted
+// when it finishes. p is ignored outside "procs" mode.
+func (s *Sim) run(p *proc, w float64, done func()) {
 	c := &s.cpu
 	if w <= 0 {
 		s.post(done)
@@ -169,8 +193,41 @@ func (s *Sim) run(w float64, done func()) {
 		}
 		return
 	}
+	if !c.procs || p == nil {
+		c.start(cpuJob{end: w, done: done})
+		return
+	}
+	j := cpuJob{end: w, p: p, done: done}
+	if p.running < p.slots {
+		p.running++
+		c.start(j)
+		return
+	}
+	if p.preempt && c.runnext {
+		// A goroutine readied by a running one (a new handler, a reply
+		// handed to its caller) takes runnext; the one it displaces goes
+		// to the back of the queue.
+		if p.next != nil {
+			p.q = append(p.q, *p.next)
+		}
+		p.next = &j
+		c.waiting++
+		return
+	}
+	p.q = append(p.q, j)
+	c.waiting++
+}
+
+// start puts a job with j.end of work left on a core.
+func (c *cpu) start(j cpuJob) {
 	c.seq++
-	c.jobs = append(c.jobs, cpuJob{c.v + w, c.seq, done})
+	j.seq = c.seq
+	j.end += c.v
+	j.vf = j.end
+	if j.p != nil && j.p.preempt && c.slice > 0 {
+		j.vf = math.Min(j.end, c.v+c.slice)
+	}
+	c.jobs = append(c.jobs, j)
 	for i := len(c.jobs) - 1; i > 0; {
 		p := (i - 1) / 2
 		if !c.less(i, p) {
@@ -179,6 +236,29 @@ func (s *Sim) run(w float64, done func()) {
 		c.jobs[i], c.jobs[p] = c.jobs[p], c.jobs[i]
 		i = p
 	}
+}
+
+func (c *cpu) pop() cpuJob {
+	top := c.jobs[0]
+	n := len(c.jobs) - 1
+	c.jobs[0] = c.jobs[n]
+	c.jobs[n] = cpuJob{}
+	c.jobs = c.jobs[:n]
+	for i := 0; ; {
+		l, r, m := 2*i+1, 2*i+2, i
+		if l < n && c.less(l, m) {
+			m = l
+		}
+		if r < n && c.less(r, m) {
+			m = r
+		}
+		if m == i {
+			break
+		}
+		c.jobs[i], c.jobs[m] = c.jobs[m], c.jobs[i]
+		i = m
+	}
+	return top
 }
 
 func (c *cpu) next() int64 {
@@ -192,24 +272,36 @@ func (c *cpu) next() int64 {
 func (c *cpu) complete(s *Sim) {
 	c.advance(s.now)
 	for len(c.jobs) > 0 && c.jobs[0].vf <= c.v+1e-3 {
-		s.post(c.jobs[0].done)
-		n := len(c.jobs) - 1
-		c.jobs[0] = c.jobs[n]
-		c.jobs[n] = cpuJob{}
-		c.jobs = c.jobs[:n]
-		for i := 0; ; {
-			l, r, m := 2*i+1, 2*i+2, i
-			if l < n && c.less(l, m) {
-				m = l
+		j := c.pop()
+		p := j.p
+		if j.end > c.v+1e-3 { // slice used up
+			if len(p.q) == 0 && p.next == nil {
+				c.start(cpuJob{end: j.end - c.v, p: p, done: j.done})
+				continue
 			}
-			if r < n && c.less(r, m) {
-				m = r
+			p.q = append(p.q, cpuJob{end: j.end - c.v, p: p, done: j.done})
+			c.waiting++
+			p.running--
+		} else {
+			s.post(j.done)
+			if p == nil {
+				continue
 			}
-			if m == i {
-				break
-			}
-			c.jobs[i], c.jobs[m] = c.jobs[m], c.jobs[i]
-			i = m
+			p.running--
+		}
+		if p.next != nil && p.running < p.slots {
+			n := *p.next
+			p.next = nil
+			c.waiting--
+			p.running++
+			c.start(n)
+		} else if len(p.q) > 0 && p.running < p.slots {
+			n := p.q[0]
+			p.q[0] = cpuJob{}
+			p.q = p.q[1:]
+			c.waiting--
+			p.running++
+			c.start(n)
 		}
 	}
 }
@@ -317,4 +409,4 @@ func (s *Sim) fcfsDone(done func()) {
 }
 
 // load is the number of jobs on the CPU, running or waiting.
-func (c *cpu) load() int { return len(c.jobs) + c.running + len(c.fifo) }
+func (c *cpu) load() int { return len(c.jobs) + c.running + len(c.fifo) + c.waiting }

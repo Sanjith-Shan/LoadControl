@@ -55,7 +55,8 @@
     "backoff_ms": 0,
     "honor_no_retry": false,
     "honor_pushback": false,
-    "send_deadline": false
+    "send_deadline": false,
+    "retry_shed": true
   },
   "mix": {"search": 0.6, "recommend": 0.39, "user": 0.005, "reserve": 0.005},
   "tiers": [0.2, 0.3, 0.5],

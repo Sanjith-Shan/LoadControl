@@ -3,6 +3,7 @@
 //	lcsim run       -config LIMIT=gradient2,DEADLINE=on,load.x=3 [-params f] [-out f.jsonl]
 //	lcsim sweep     -param load.x -values 0.5,1,2,3,4 [-config ...] -out f.jsonl
 //	lcsim calibrate -capacity 1450 [-lat search=12,recommend=8,user=3,reserve=10] -out p.json
+//	lcsim replay    -results results/exp0_capacity.jsonl [-results ...] -out results/sim_replay.jsonl
 //
 // run and sweep write JSON lines: one per simulated second (run, or sweep
 // with -seconds) and one summary per run.
@@ -13,8 +14,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +38,8 @@ func main() {
 		err = sweep(os.Args[2:])
 	case "calibrate":
 		err = calibrate(os.Args[2:])
+	case "replay":
+		err = replay(os.Args[2:])
 	default:
 		usage()
 	}
@@ -44,7 +50,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: lcsim run|sweep|calibrate [flags] (-h for flags)")
+	fmt.Fprintln(os.Stderr, "usage: lcsim run|sweep|calibrate|replay [flags] (-h for flags)")
 	os.Exit(2)
 }
 
@@ -208,6 +214,7 @@ func calibrate(args []string) error {
 	capacity := fs.Float64("capacity", 0, "measured max goodput (rps) with no control (required)")
 	lat := fs.String("lat", "", "measured low-load mean latency per request type in ms: search=..,recommend=..,user=..,reserve=..")
 	lowRPS := fs.Float64("lowload-rps", 50, "rate the low-load latencies were measured at")
+	hidden := fs.Float64("hidden-ms", -1, "fix hidden_ms (CPU per user attempt outside the handlers) instead of fitting it; -1 = fit")
 	out := fs.String("out", "", "write the calibrated params here (default stdout)")
 	fs.Parse(args)
 	if *capacity <= 0 {
@@ -217,7 +224,7 @@ func calibrate(args []string) error {
 	if err != nil {
 		return err
 	}
-	in := sim.Measured{CapacityRPS: *capacity, LowLoadRPS: *lowRPS, LatencyMS: map[string]float64{}}
+	in := sim.Measured{CapacityRPS: *capacity, LowLoadRPS: *lowRPS, LatencyMS: map[string]float64{}, HiddenMS: *hidden}
 	for _, kv := range sim.SplitConfig(*lat) {
 		x, err := strconv.ParseFloat(kv[1], 64)
 		if err != nil {
@@ -240,4 +247,152 @@ func calibrate(args []string) error {
 	}
 	fmt.Fprintln(os.Stderr, report)
 	return closeFn()
+}
+
+type multi []string
+
+func (m *multi) String() string     { return strings.Join(*m, ",") }
+func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
+
+// replay simulates every recorded run in the given result files with one
+// parameter set and writes measured against simulated, one line per run.
+func replay(args []string) error {
+	fs := flag.NewFlagSet("replay", flag.ExitOnError)
+	pf := fs.String("params", "", "params file (default: built-in, calibrated)")
+	cfg := fs.String("config", "", "overrides applied to every run (for experiments with the model)")
+	var files multi
+	fs.Var(&files, "results", "results JSONL file from bench/lcbench.py (repeatable; positional args too)")
+	skip := fs.String("skip", "sim_replay", "skip files whose name contains this")
+	out := fs.String("out", "", "JSONL output")
+	par := fs.Int("parallel", 1, "runs in parallel")
+	exclude := fs.String("exclude", "", "comma list of runs to treat as contaminated: exp/name, or exp/name@time-prefix for one occurrence")
+	fs.Parse(args)
+	files = append(files, fs.Args()...)
+	base, err := params(*pf, *cfg)
+	if err != nil {
+		return err
+	}
+	type job struct {
+		file string
+		rec  *sim.Record
+	}
+	var jobs []job
+	for _, f := range files {
+		if *skip != "" && strings.Contains(f, *skip) {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			r := &sim.Record{}
+			if err := json.Unmarshal([]byte(line), r); err != nil {
+				return fmt.Errorf("%s:%d: %v", f, i+1, err)
+			}
+			if r.DurationS <= 0 {
+				continue
+			}
+			jobs = append(jobs, job{filepath.ToSlash(f), r})
+		}
+	}
+	res := make([]*sim.Comparison, len(jobs))
+	errs := make([]error, len(jobs))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, max(1, *par))
+	for i, j := range jobs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			res[i], errs[i] = sim.Replay(base, j.rec, j.file)
+			if errs[i] == nil && res[i].Contaminated == "" && excluded(*exclude, j.rec) {
+				res[i].Contaminated = "listed in -exclude"
+			}
+		}()
+	}
+	wg.Wait()
+	w, closeFn, err := output(*out)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(w)
+	byExp := map[string][]*sim.Comparison{}
+	var exps []string
+	for i, c := range res {
+		if errs[i] != nil {
+			return fmt.Errorf("%s %s: %v", jobs[i].file, jobs[i].rec.Name, errs[i])
+		}
+		if err := enc.Encode(c); err != nil {
+			return err
+		}
+		if byExp[c.Exp] == nil {
+			exps = append(exps, c.Exp)
+		}
+		byExp[c.Exp] = append(byExp[c.Exp], c)
+		rel := "-"
+		if c.RelErr != nil {
+			rel = fmt.Sprintf("%.0f%%", 100**c.RelErr)
+		}
+		fmt.Fprintf(os.Stderr, "%-10s %-32s good/s measured %7.1f sim %7.1f  err %+7.1f (%s)%s\n",
+			c.Exp, c.Name, c.Measured.GoodRPS, c.Sim.GoodRPS, c.AbsErr, rel, recov(c))
+	}
+	fmt.Fprintln(os.Stderr, "\nexperiment  runs  median |err| good/s  median rel  max rel  within 10%")
+	for _, e := range exps {
+		var abs, rel []float64
+		in := 0
+		n := 0
+		for _, c := range byExp[e] {
+			if c.Contaminated != "" {
+				continue
+			}
+			n++
+			abs = append(abs, math.Abs(c.AbsErr))
+			if c.RelErr != nil {
+				rel = append(rel, *c.RelErr)
+				if *c.RelErr <= 0.1 {
+					in++
+				}
+			}
+		}
+		slices.Sort(abs)
+		slices.Sort(rel)
+		med := func(x []float64) float64 {
+			if len(x) == 0 {
+				return math.NaN()
+			}
+			return x[len(x)/2]
+		}
+		fmt.Fprintf(os.Stderr, "%-10s %5d  %18.1f  %9.0f%%  %6.0f%%  %4d/%d\n", e, n, med(abs), 100*med(rel),
+			100*slices.Max(append(rel, 0)), in, len(rel))
+	}
+	return closeFn()
+}
+
+func recov(c *sim.Comparison) string {
+	if c.Faults == 0 {
+		return ""
+	}
+	f := func(p *int) string {
+		if p == nil {
+			return "never"
+		}
+		return strconv.Itoa(*p)
+	}
+	return fmt.Sprintf("  recovery s measured %s sim %s", f(c.Measured.RecoveryS), f(c.Sim.RecoveryS))
+}
+
+// excluded reports whether r is named in the -exclude list.
+func excluded(list string, r *sim.Record) bool {
+	id := r.Exp + "/" + r.Name
+	for _, e := range strings.Split(list, ",") {
+		if e = strings.TrimSpace(e); e != "" && (e == id || strings.HasPrefix(id+"@"+r.Time, e) && strings.Contains(e, "@")) {
+			return true
+		}
+	}
+	return false
 }

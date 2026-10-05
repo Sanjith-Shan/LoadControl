@@ -16,6 +16,7 @@ package sim
 
 import (
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"reflect"
 	"strconv"
@@ -53,8 +54,16 @@ type Sim struct {
 	tiers    []float64     // cumulative
 	userPrio []int
 	steps    []step
+	busyAtT0 float64
 
-	secs        []*sec
+	secs      []*sec
+	scratch   sec   // stats from the warm-up phase, discarded
+	t0        int64 // end of the warm-up phase; reported time starts here
+	deps      map[string]*dep
+	mongoProc map[string]*proc
+	host      *proc
+	// Unsupported lists fault specs the model ignored.
+	Unsupported []string
 	outstanding int
 	endNs       int64
 	lastBusy    float64
@@ -68,8 +77,14 @@ func New(p *Params) (*Sim, error) {
 	if p.Cores <= 0 {
 		p.Cores = 1
 	}
-	s := &Sim{P: p, endNs: int64(p.DurationS * 1e9)}
-	s.cpu.cores, s.cpu.fcfs = p.Cores, p.CPU == "fcfs"
+	t0 := ms(p.Load.WarmupS * 1e3)
+	s := &Sim{P: p, t0: t0, endNs: t0 + ms(p.DurationS*1e3), deps: map[string]*dep{}}
+	s.cpu.cores, s.cpu.fcfs, s.cpu.procs = p.Cores, p.CPU == "fcfs", p.CPU == "procs"
+	s.cpu.slice = p.SliceMS * 1e6
+	s.cpu.runnext = !p.NoRunnext
+	if s.cpu.procs && s.cpu.slice == 0 {
+		s.cpu.slice = 10e6
+	}
 	s.rArr = rand.New(rand.NewPCG(p.Seed, 1))
 	s.rSvc = rand.New(rand.NewPCG(p.Seed, 2))
 	s.rKey = rand.New(rand.NewPCG(p.Seed, 3))
@@ -77,6 +92,12 @@ func New(p *Params) (*Sim, error) {
 	var err error
 	if s.steps, err = p.steps(); err != nil {
 		return nil, err
+	}
+	if t0 > 0 {
+		for i := range s.steps {
+			s.steps[i].t += p.Load.WarmupS
+		}
+		s.steps = append([]step{{0, p.Load.WarmupRPS}}, s.steps...)
 	}
 	var tot float64
 	for i, n := range reqNames {
@@ -97,10 +118,14 @@ func New(p *Params) (*Sim, error) {
 	for i := range s.tiers {
 		s.tiers[i] /= tot
 	}
-	// x-lc-user carries a user name; servers hash it with UserPriority.
+	// cmd/loadgen sends the user index as X-Lc-User; lchttp takes 0..127
+	// as the priority itself and hashes anything else.
 	s.userPrio = make([]int, max(1, p.User.Users))
 	for i := range s.userPrio {
-		s.userPrio[i] = priority.UserPriority("user_"+strconv.Itoa(i), 0)
+		s.userPrio[i] = i
+		if i >= priority.UserLevels {
+			s.userPrio[i] = priority.UserPriority(strconv.Itoa(i), 0)
+		}
 	}
 	if err := s.build(); err != nil {
 		return nil, err
@@ -111,6 +136,8 @@ func New(p *Params) (*Sim, error) {
 func (s *Sim) build() error {
 	p := s.P
 	lookup := func(k string) (string, bool) { v, ok := p.Env[k]; return v, ok }
+	s.mongoProc = map[string]*proc{}
+	s.host = s.newProc("host", "host", true)
 	for i, name := range svcNames {
 		v := &service{name: name, id: i, http: i == svcFrontend, maxConc: p.MaxConcurrency[name],
 			dbTODO: p.Mongo.CtxTODO[name], pool: p.Mongo.Pool}
@@ -143,6 +170,10 @@ func (s *Sim) build() error {
 		if cfg.RateLimit != nil {
 			v.rl = ratelimit.New(cfg.RateLimit.Rate, cfg.RateLimit.Burst, s.clock)
 		}
+		v.proc = s.newProc(name, "go", true)
+		if name == "rate" || name == "profile" || name == "reservation" {
+			s.mongoProc[name] = s.newProc("mongo-"+name, "mongod", false)
+		}
 		s.svc[i] = v
 	}
 	h := func(svc int, method string, steps ...hstep) *handler {
@@ -153,7 +184,7 @@ func (s *Sim) build() error {
 	call := func(x *handler) hstep { return hstep{kind: stCall, to: x} }
 	mk := func(name string) *cache {
 		cp := p.Caches[name]
-		c := &cache{name: name, id: len(s.caches), present: make([]bool, max(1, cp.Keys)), perReq: max(1, cp.PerReq)}
+		c := &cache{name: name, id: len(s.caches), present: make([]bool, max(1, cp.Keys)), perReq: max(1, cp.PerReq), proc: s.newProc("memc-"+name, "memcached", false)}
 		for i := range c.present {
 			c.present[i] = true // the real system runs warm
 		}
@@ -197,6 +228,15 @@ func (s *Sim) build() error {
 		from.client[ed[1]] = &client{cfg: cfg}
 	}
 	return nil
+}
+
+// newProc makes a process for "procs" mode with the slots of its kind.
+func (s *Sim) newProc(name, kind string, preempt bool) *proc {
+	n := s.P.Slots[kind]
+	if n <= 0 {
+		n = map[string]int{"go": 2, "memcached": 4, "mongod": 4, "host": 2}[kind]
+	}
+	return &proc{name: name, slots: n, preempt: preempt}
 }
 
 func envGet(lookup func(string) (string, bool), svc, key, def string) string {
@@ -243,7 +283,8 @@ func seedRand(v *limit.Vegas, f func() float64) {
 func (s *Sim) Run() *Result {
 	wall := time.Now()
 	s.at(0, s.nextArrival)
-	s.at(1e9, s.tickSecond)
+	s.at(s.t0+1e9, s.tickSecond)
+	s.at(s.t0, func() { s.cpu.advance(s.now); s.busyAtT0 = s.cpu.busy })
 	for _, v := range s.svc {
 		if v.dagor != nil {
 			v := v
@@ -263,16 +304,7 @@ func (s *Sim) Run() *Result {
 			s.at(1e8, tick)
 		}
 	}
-	if f := s.P.Flush; f.At > 0 || f.Dur > 0 {
-		s.at(ms(f.At*1e3), func() {
-			for _, c := range s.caches {
-				if f.hits(c.name) {
-					clear(c.present)
-					c.disabled = ms((f.At + f.Dur) * 1e3)
-				}
-			}
-		})
-	}
+	s.schedFaults()
 	for (s.now < s.endNs || s.outstanding > 0) && s.step() {
 	}
 	return s.result(time.Since(wall))
@@ -331,10 +363,11 @@ type ureq struct {
 	in       info
 	start    int64
 	attempts int
+	warm     bool // sent during the warm-up phase, not counted
 }
 
 func (s *Sim) arrive() {
-	u := &ureq{start: s.now}
+	u := &ureq{start: s.now, warm: s.now < s.t0}
 	x := s.rArr.Float64()
 	for u.typ < nReq-1 && x >= s.mix[u.typ] {
 		u.typ++
@@ -372,30 +405,124 @@ func (s *Sim) userAttempt(u *ureq) {
 	s.at(s.now+ms(s.P.NetMS), func() { s.serve(s.entry[u.typ], a, u.in, u.attempts, settle) })
 }
 
+// User outcomes, as cmd/loadgen classifies the final attempt.
+const (
+	oGood    = iota // 2xx within the SLO
+	oSlow           // 2xx over the SLO
+	oShed           // 503 with X-Lc-Shed
+	oError          // any other 5xx
+	oTimeout        // the client timed out
+	nOut
+)
+
+// userResult follows cmd/loadgen's retry rules: timeouts and 5xx are
+// retried up to user.retries times; a shed 503 only if retry_shed; with
+// honor_pushback a negative pushback stops retries and a positive one is
+// waited out; with honor_no_retry a marked response is not retried; the
+// backoff is exponential with full jitter on top of any pushback.
 func (s *Sim) userResult(u *ureq, r reply) {
 	if r.code == OK {
-		s.endUser(u, OK)
+		if float64(s.now-u.start)/1e6 <= s.P.SLOMS {
+			s.endUser(u, oGood)
+		} else {
+			s.endUser(u, oSlow)
+		}
 		return
 	}
 	up := s.P.User
-	if u.attempts <= up.Retries && !(up.HonorNoRetry && r.noRetry) {
-		wait := s.backoff(retry.Backoff{Initial: time.Duration(ms(up.BackoffMS)), Max: time.Second, Multiplier: 2}, u.attempts)
-		ok := true
-		if up.HonorPushback {
-			d, present, okp := retry.Pushback(r.pushback)
-			ok = okp
-			if present {
-				wait = d
+	res, retryable, wait := oError, true, time.Duration(0)
+	switch {
+	case r.local:
+		res = oTimeout
+	case r.code == ResourceExhausted && r.shed != "":
+		res, retryable = oShed, up.RetryShed
+		if up.HonorPushback && r.pushback != "" {
+			n, _ := strconv.Atoi(r.pushback)
+			if n < 0 {
+				retryable = false
 			}
-		}
-		if ok {
-			s.at(s.now+int64(wait), func() { s.userAttempt(u) })
-			return
+			wait = time.Duration(n) * time.Millisecond
 		}
 	}
-	if r.local {
-		s.endUser(u, DeadlineExceeded)
-	} else {
-		s.endUser(u, Internal)
+	if up.HonorNoRetry && r.noRetry {
+		retryable = false
+	}
+	if !retryable || u.attempts > up.Retries {
+		s.endUser(u, res)
+		return
+	}
+	if up.BackoffMS > 0 {
+		wait += time.Duration(s.rMisc.Float64() * up.BackoffMS * 1e6 * math.Pow(2, float64(u.attempts-1)))
+	}
+	s.at(s.now+int64(wait), func() { s.userAttempt(u) })
+}
+
+// Dependencies behind toxiproxy, by proxy name.
+type dep struct {
+	extra int64 // injected latency per response
+	down  bool
+}
+
+func (s *Sim) dep(name string) *dep {
+	d := s.deps[name]
+	if d == nil {
+		d = &dep{}
+		s.deps[name] = d
+	}
+	return d
+}
+
+// schedFaults schedules the fault timeline (bench/lcbench.py's specs) and
+// the flush/slow shorthand triggers.
+func (s *Sim) schedFaults() {
+	at := func(sec float64, fn func()) { s.at(s.t0+ms(sec*1e3), fn) }
+	if f := s.P.Flush; f.At > 0 || f.Dur > 0 {
+		at(f.At, func() {
+			for _, c := range s.caches {
+				if f.hits(c.name) {
+					clear(c.present)
+					c.disabled = s.t0 + ms((f.At+f.Dur)*1e3)
+				}
+			}
+		})
+	}
+	if sl := s.P.Slow; sl.ExtraMS > 0 && sl.Dur > 0 {
+		for _, name := range []string{"rate", "profile", "reservation"} {
+			if sl.hits(name) {
+				d := s.dep("mongo-" + name)
+				at(sl.At, func() { d.extra += ms(sl.ExtraMS) })
+				at(sl.At+sl.Dur, func() { d.extra -= ms(sl.ExtraMS) })
+			}
+		}
+	}
+	for _, f := range s.P.Faults {
+		at(f.At, func() { s.fault(f.Spec) })
+	}
+}
+
+// fault applies one spec: flush:<cache>, latency:<proxy>:<ms>[:<jitter>],
+// down:<proxy>, up:<proxy>, clear. Others (cpu:) are not modeled.
+func (s *Sim) fault(spec string) {
+	a := strings.Split(spec, ":")
+	switch {
+	case a[0] == "flush" && len(a) > 1:
+		for _, c := range s.caches {
+			if c.name == a[1] {
+				clear(c.present)
+			}
+		}
+	case a[0] == "latency" && len(a) > 2:
+		v, _ := strconv.ParseFloat(a[2], 64)
+		s.dep(a[1]).extra = ms(v)
+	case a[0] == "down" && len(a) > 1:
+		s.dep(a[1]).down = true
+	case a[0] == "up" && len(a) > 1:
+		s.dep(a[1]).down = false
+	case a[0] == "clear":
+		for _, d := range s.deps {
+			*d = dep{}
+		}
+	default:
+		s.Unsupported = append(s.Unsupported, spec)
 	}
 }

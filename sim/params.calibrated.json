@@ -1,0 +1,104 @@
+{
+  "_notes": [
+    "Calibrated 2026-10-05 with cpu=procs (two-level CPU model), as described in sim/README.md (Calibration).",
+    "Command: lcsim calibrate -capacity 400 -hidden-ms 0.5 -lat search=10.05,recommend=3.53,login=1.77,reserve=12.05 -lowload-rps 50 -config load.process=constant,cpu=procs",
+    "capacity 400 req/s: highest clean no-control goodput in results/exp0_capacity.jsonl (400 offered: 398.2 and 398.6 good/s).",
+    "Latencies: per-type means of the clean 300 req/s exp0 run (02:32: search 39.741, recommend 13.974, login 6.993, reserve 47.643 ms) scaled by 0.2528, the ratio of overall p50 at 50 req/s (5.333 ms) to that at 300 req/s (21.094 ms).",
+    "hidden_ms 0.5 chosen from {0, 0.5, 1.0, 1.5} by replay error on exp1_fixedconc_sweep and tuning (calibration data, not validation).",
+    "The previous processor-sharing calibration is kept in git history; cpu=ps with these parameters is not calibrated."
+  ],
+  "seed": 1,
+  "duration_s": 60,
+  "warmup_s": 5,
+  "cores": 2,
+  "cpu": "procs",
+  "dist": "exp",
+  "cv": 1,
+  "capacity_rps": 400,
+  "net_ms": 0.6204965517241413,
+  "rpc_server_ms": 0.14441019659999998,
+  "rpc_client_ms": 0.07220509829999999,
+  "hidden_ms": 0.5,
+  "handlers": {
+    "frontend.recommend": 0.37072693199309714,
+    "frontend.reserve": 4.25052876330646,
+    "frontend.search": 1.6580574213000359,
+    "frontend.user": 0.0468383465078379,
+    "geo.nearby": 1.184326729500025,
+    "profile.get": 0.24195366358181422,
+    "rate.get": 0.4737306918000105,
+    "recommendation.get": 0.3089391099942476,
+    "reservation.check": 0.5684768301600123,
+    "reservation.make": 2.12526438165323,
+    "search.nearby": 0.37898455344000803,
+    "user.check": 0.18333768427879243
+  },
+  "caches": {
+    "profile": {
+      "keys": 80,
+      "per_req": 5
+    },
+    "rate": {
+      "keys": 80,
+      "per_req": 5
+    },
+    "reserve": {
+      "keys": 1120,
+      "per_req": 10
+    }
+  },
+  "memc_ms": 0.07220509829999999,
+  "memc_key_ms": 0.018051274574999998,
+  "mongo": {
+    "op_ms": 2.1661529489999998,
+    "key_ms": 0.18051274575,
+    "io_ms": 0.2,
+    "pool": 100,
+    "ctx_todo": {
+      "rate": true
+    }
+  },
+  "max_concurrency": {},
+  "cancel_propagation": true,
+  "sched_quantum_ms": 1,
+  "slo_ms": 500,
+  "user": {
+    "users": 1000,
+    "timeout_ms": 1000,
+    "retries": 0,
+    "backoff_ms": 0,
+    "honor_no_retry": false,
+    "honor_pushback": false,
+    "send_deadline": false,
+    "retry_shed": true
+  },
+  "mix": {
+    "recommend": 0.39,
+    "reserve": 0.005,
+    "search": 0.6,
+    "user": 0.005
+  },
+  "tiers": [
+    0.2,
+    0.3,
+    0.5
+  ],
+  "load": {
+    "process": "constant",
+    "rps": 0,
+    "x": 1,
+    "steps": "",
+    "schedule": "",
+    "warmup_s": 0,
+    "warmup_rps": 0
+  },
+  "flush": {
+    "at": 0,
+    "dur": 0
+  },
+  "slow": {
+    "at": 0,
+    "dur": 0
+  },
+  "env": {}
+}

@@ -8,10 +8,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
-//go:embed params.json
+//go:embed params.calibrated.json
 var defaultParams []byte
+
+//go:embed params.json
+var placeholderParams []byte
 
 // Params is everything a run needs: the model (CPU costs, caches, MongoDB),
 // the workload, the fault triggers and the LoadControl configuration as
@@ -24,9 +28,15 @@ type Params struct {
 	WarmupS   float64 `json:"warmup_s"`   // excluded from the summary
 
 	Cores float64 `json:"cores"` // the CPU every container shares
-	CPU   string  `json:"cpu"`   // ps (processor sharing, default) | fcfs
-	Dist  string  `json:"dist"`  // exp | lognormal | const
-	CV    float64 `json:"cv"`    // lognormal coefficient of variation
+	CPU   string  `json:"cpu"`   // ps (processor sharing) | procs (per-process FIFO slots, then processor sharing) | fcfs
+	// procs mode: worker slots per process kind (go = GOMAXPROCS of each
+	// service, memcached and mongod threads, host = the load generator and
+	// other CPU outside the services) and the Go preemption slice.
+	Slots     map[string]int `json:"slots,omitempty"`
+	SliceMS   float64        `json:"slice_ms,omitempty"`
+	NoRunnext bool           `json:"no_runnext,omitempty"` // procs mode: plain FIFO, no runnext slot
+	Dist      string         `json:"dist"`                 // exp | lognormal | const
+	CV        float64        `json:"cv"`                   // lognormal coefficient of variation
 
 	CapacityRPS float64 `json:"capacity_rps"` // measured max goodput with no control; load.x is relative to it
 
@@ -53,6 +63,10 @@ type Params struct {
 
 	Flush Trigger `json:"flush"` // cold cache: flushed at At, fills discarded until At+Dur
 	Slow  Trigger `json:"slow"`  // MongoDB latency injection (toxiproxy)
+	// Faults is a timeline in bench/lcbench.py's spec language:
+	// flush:<rate|profile|reserve>, latency:<proxy>:<ms>, down:<proxy>,
+	// up:<proxy>, clear. Proxies are mongo-<svc> and memc-<cache>.
+	Faults []Fault `json:"faults,omitempty"`
 
 	Env map[string]string `json:"env"` // LoadControl keys, LC_ prefix optional, LC_<SVC>_<KEY> per service
 }
@@ -78,13 +92,24 @@ type UserParams struct {
 	HonorNoRetry  bool    `json:"honor_no_retry"`
 	HonorPushback bool    `json:"honor_pushback"`
 	SendDeadline  bool    `json:"send_deadline"` // send X-Lc-Deadline-Ms so the frontend has a deadline
+	RetryShed     bool    `json:"retry_shed"`    // retry 503s from admission control (loadgen default)
 }
 
 type LoadParams struct {
-	Process string  `json:"process"` // poisson | constant
-	RPS     float64 `json:"rps"`     // absolute rate; if 0, X*capacity_rps
-	X       float64 `json:"x"`
-	Steps   string  `json:"steps"` // "t:x;t:x" piecewise constant multiples of capacity, overrides rps/x
+	Process  string  `json:"process"` // poisson | constant
+	RPS      float64 `json:"rps"`     // absolute rate; if 0, X*capacity_rps
+	X        float64 `json:"x"`
+	Steps    string  `json:"steps"`    // "t:x;t:x" piecewise constant multiples of capacity, overrides rps/x
+	Schedule string  `json:"schedule"` // loadgen format "0s:500,30s:1500" in req/s, overrides all of the above
+	// A warm-up phase before t=0 (lcbench runs 15 s at 100 req/s): it
+	// adapts limits and budgets and is not reported.
+	WarmupS   float64 `json:"warmup_s"`
+	WarmupRPS float64 `json:"warmup_rps"`
+}
+
+type Fault struct {
+	At   float64 `json:"t"`
+	Spec string  `json:"fault"`
 }
 
 type Trigger struct {
@@ -106,9 +131,16 @@ func (t Trigger) hits(name string) bool {
 	return false
 }
 
-// Default returns the embedded sim/params.json.
-func Default() *Params {
-	p, err := parse(defaultParams)
+// Default returns the embedded sim/params.calibrated.json, fitted to the
+// measured runs (see README.md, Calibration).
+func Default() *Params { return mustParse(defaultParams) }
+
+// Placeholder returns the embedded sim/params.json: the uncalibrated
+// starting point, with guessed costs.
+func Placeholder() *Params { return mustParse(placeholderParams) }
+
+func mustParse(b []byte) *Params {
+	p, err := parse(b)
 	if err != nil {
 		panic(err)
 	}
@@ -264,6 +296,20 @@ func (p *Params) EnvSummary() string {
 type step struct{ t, x float64 }
 
 func (p *Params) steps() ([]step, error) {
+	if p.Load.Schedule != "" {
+		var out []step
+		for _, s := range strings.Split(p.Load.Schedule, ",") {
+			a, b, _ := strings.Cut(strings.TrimSpace(s), ":")
+			t, e1 := time.ParseDuration(a)
+			r, e2 := strconv.ParseFloat(b, 64)
+			if e1 != nil || e2 != nil {
+				return nil, fmt.Errorf("load.schedule %q: want 0s:500,30s:1500", p.Load.Schedule)
+			}
+			out = append(out, step{t.Seconds(), r})
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].t < out[j].t })
+		return out, nil
+	}
 	base := p.Load.RPS
 	if base <= 0 {
 		base = p.Load.X * p.CapacityRPS

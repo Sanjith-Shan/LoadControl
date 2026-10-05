@@ -9,9 +9,11 @@ import (
 	"github.com/Sanjith-Shan/LoadControl/limit"
 )
 
+// The behavior tests run on the placeholder model (capacity 1600 req/s),
+// where they were written; replay checks the calibrated one against data.
 func run(t *testing.T, config string) (*Sim, *Result) {
 	t.Helper()
-	p := Default()
+	p := Placeholder()
 	if err := p.ApplyConfig(config); err != nil {
 		t.Fatal(err)
 	}
@@ -61,11 +63,13 @@ func TestConservation(t *testing.T) {
 		"load.x=0.7,duration_s=20,user.retries=2,RETRY=naive,PER_TRY_TIMEOUT_MS=300,flush.at=5,flush.dur=5,slow.at=5,slow.dur=5,slow.extra_ms=100,mongo.pool=10",
 		"load.x=3,duration_s=10,LIMIT=gradient2,DEADLINE=on,FRONTEND_DEFAULT_TIMEOUT_MS=800,RATELIMIT=3000,max_concurrency.search=20,cancel_propagation=false",
 		"load.x=2,duration_s=10,cpu=fcfs,LIMIT=aimd,QUEUE_WAIT_MS=50",
+		"load.x=2,duration_s=10,cpu=procs,user.retries=2,RETRY=naive,PER_TRY_TIMEOUT_MS=200,flush.at=3,flush.dur=3",
+		"load.x=2,duration_s=20,load.warmup_s=5,load.warmup_rps=200,faults=[{\"t\":3,\"fault\":\"flush:rate\"},{\"t\":4,\"fault\":\"latency:mongo-rate:200\"},{\"t\":5,\"fault\":\"down:mongo-profile\"},{\"t\":6,\"fault\":\"latency:memc-profile:50\"},{\"t\":9,\"fault\":\"clear\"}],LIMIT=gradient2,user.retries=2,user.honor_pushback=true,PUSHBACK_MS=50",
 	} {
 		s, r := run(t, cfg)
-		o := r.Summary.Outcomes
-		if o[0] == 0 || o[0] != o[1]+o[2]+o[3] || s.outstanding != 0 {
-			t.Errorf("%s: offered %d != success %d + failed %d + timeout %d (outstanding %d)", cfg, o[0], o[1], o[2], o[3], s.outstanding)
+		o := r.Summary.Totals
+		if o.Offered == 0 || o.Offered != o.Good+o.Slow+o.Shed+o.Error+o.Timeout || s.outstanding != 0 {
+			t.Errorf("%s: outcomes %+v do not add up (outstanding %d)", cfg, o, s.outstanding)
 		}
 		for s.step() {
 		}
@@ -83,17 +87,24 @@ func TestConservation(t *testing.T) {
 	}
 }
 
+// The behavior tests run under both CPU models.
+var cpuModels = []string{"cpu=ps,", "cpu=procs,"}
+
 // At 3x capacity an uncontrolled system collapses; Gradient2 with
-// deadline dropping holds goodput near capacity.
+// deadline dropping holds goodput near capacity. Processor sharing loses
+// everything; the two-level model keeps about a third, as the measured
+// system kept 0.28x at 2x, so the bound is 0.4.
 func TestOverload(t *testing.T) {
-	_, none := run(t, "load.x=3,duration_s=30")
-	_, g2 := run(t, "load.x=3,duration_s=30,LIMIT=gradient2,DEADLINE=on")
-	t.Logf("goodput/capacity at 3x: none %.2f, gradient2+deadline %.2f", none.Summary.GoodputX, g2.Summary.GoodputX)
-	if none.Summary.GoodputX > 0.3 {
-		t.Errorf("no control kept %.2f of capacity at 3x", none.Summary.GoodputX)
-	}
-	if g2.Summary.GoodputX < 0.85 {
-		t.Errorf("gradient2+deadline kept only %.2f of capacity at 3x", g2.Summary.GoodputX)
+	for _, m := range cpuModels {
+		_, none := run(t, m+"load.x=3,duration_s=30")
+		_, g2 := run(t, m+"load.x=3,duration_s=30,LIMIT=gradient2,DEADLINE=on")
+		t.Logf("%s goodput/capacity at 3x: none %.2f, gradient2+deadline %.2f", m, none.Summary.GoodputX, g2.Summary.GoodputX)
+		if none.Summary.GoodputX > 0.4 {
+			t.Errorf("%s no control kept %.2f of capacity at 3x", m, none.Summary.GoodputX)
+		}
+		if g2.Summary.GoodputX < 0.85 {
+			t.Errorf("%s gradient2+deadline kept only %.2f of capacity at 3x", m, g2.Summary.GoodputX)
+		}
 	}
 }
 
@@ -103,21 +114,23 @@ func TestOverload(t *testing.T) {
 func TestMetastable(t *testing.T) {
 	const base = "load.x=0.7,duration_s=80,user.retries=2,RETRY_ATTEMPTS=3,PER_TRY_TIMEOUT_MS=300,"
 	const trig = "flush.at=20,flush.dur=10,slow.at=20,slow.dur=10,slow.extra_ms=100,"
-	_, quiet := run(t, base+"RETRY=naive")
-	_, naive := run(t, base+trig+"RETRY=naive")
-	_, safe := run(t, base+trig+"RETRY=budget,ONE_LAYER=on,LIMIT=gradient2,DEADLINE=on,user.honor_no_retry=true")
-	pre := mean(naive.Seconds, 5, 20)
-	q, n, s := mean(quiet.Seconds, 40, 80), mean(naive.Seconds, 40, 80), mean(safe.Seconds, 40, 80)
-	t.Logf("goodput before %.0f; 10-50 s after the trigger: no trigger %.0f, naive %.0f, budget+one-layer+limiter %.0f (recovery %v s)",
-		pre, q, n, s, deref(safe.Summary.RecoveryS))
-	if q < 0.9*pre {
-		t.Errorf("naive retries degrade without a trigger: %.0f vs %.0f", q, pre)
-	}
-	if n > 0.3*pre || naive.Summary.RecoveryS != nil {
-		t.Errorf("naive retries recovered after the trigger: %.0f vs %.0f before", n, pre)
-	}
-	if s < 0.9*pre || safe.Summary.RecoveryS == nil || *safe.Summary.RecoveryS > 10 {
-		t.Errorf("controlled system did not recover: %.0f vs %.0f before, recovery %v", s, pre, safe.Summary.RecoveryS)
+	for _, m := range cpuModels {
+		_, quiet := run(t, m+base+"RETRY=naive")
+		_, naive := run(t, m+base+trig+"RETRY=naive")
+		_, safe := run(t, m+base+trig+"RETRY=budget,ONE_LAYER=on,LIMIT=gradient2,DEADLINE=on,user.honor_no_retry=true")
+		pre := mean(naive.Seconds, 5, 20)
+		q, n, s := mean(quiet.Seconds, 40, 80), mean(naive.Seconds, 40, 80), mean(safe.Seconds, 40, 80)
+		t.Logf("%s goodput before %.0f; 10-50 s after the trigger: no trigger %.0f, naive %.0f, budget+one-layer+limiter %.0f (recovery %v s)",
+			m, pre, q, n, s, deref(safe.Summary.RecoveryS))
+		if q < 0.9*pre {
+			t.Errorf("%s naive retries degrade without a trigger: %.0f vs %.0f", m, q, pre)
+		}
+		if n > 0.3*pre || naive.Summary.RecoveryS != nil {
+			t.Errorf("%s naive retries recovered after the trigger: %.0f vs %.0f before", m, n, pre)
+		}
+		if s < 0.9*pre || safe.Summary.RecoveryS == nil || *safe.Summary.RecoveryS > 10 {
+			t.Errorf("%s controlled system did not recover: %.0f vs %.0f before, recovery %v", m, s, pre, safe.Summary.RecoveryS)
+		}
 	}
 }
 

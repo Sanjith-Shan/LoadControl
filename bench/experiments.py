@@ -228,6 +228,23 @@ def tuning(a):
             run("tuning", f"{name}-{x}x", env, "tuning the full configuration", out, rate=round(a.cap * x))
 
 
+def exp8(a):
+    """Capacity shift: a noisy neighbour takes one of the VM's two vCPUs from
+    30 s to 90 s while the offered load stays at 0.9x of the measured
+    capacity. A static limit tuned to the old capacity is now far above the
+    new one; adaptive limits have to find the new one."""
+    out = a.out or os.path.join(REPO, "results", "exp8_capacity_shift.jsonl")
+    cfgs = baselines(a.cap, a.conc)
+    cfgs["gradient2"] = (merge(lim("gradient2"), DEADLINE), "Gradient2 at every service + deadline drop")
+    cfgs["full"] = (full(), "LoadControl, every piece on")
+    for rep in range(a.reps):
+        for name, (env, c) in cfgs.items():
+            if a.only and name not in a.only:
+                continue
+            run("exp8", f"{name}-0.9x-hog", env, c, out, rate=round(a.cap * 0.9), duration=120,
+                faults="30s=hog:1,90s=clear", note=f"rep {rep}; busy-loop container from 30 s to 90 s")
+
+
 def exp7(a):
     """End-to-end overhead at low load: everything on but nothing to shed."""
     out = a.out or os.path.join(REPO, "results", "exp7_overhead_e2e.jsonl")

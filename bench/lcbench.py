@@ -242,6 +242,13 @@ def apply_fault(spec):
         http("POST", f"{TOXI}/proxies/{a[0]}", {"enabled": True})
     elif kind == "clear":
         reset_faults()
+        sh("docker rm -f $(docker ps -aq --filter name=lchotel-hog) 2>/dev/null || true", check=False)
+    elif kind == "hog":
+        # A noisy neighbour: one busy-looping container per CPU asked for,
+        # sharing the VM's vCPUs with the services. hog:<n> starts, hog:0 stops.
+        sh("docker rm -f $(docker ps -aq --filter name=lchotel-hog) 2>/dev/null || true", check=False)
+        for i in range(int(a[0])):
+            sh(f"docker run -d --rm --name lchotel-hog{i} busybox sh -c 'while :; do :; done'")
     elif kind == "cpu":
         sh(f"docker update --cpus {a[1]} lchotel-{a[0]}-1")
     else:
@@ -346,6 +353,7 @@ def main():
         mon.stop.set()
         after = load_snapshot()
         reset_faults()
+        sh("docker rm -f $(docker ps -aq --filter name=lchotel-hog) 2>/dev/null || true", check=False)
         time.sleep(2)  # one more scrape
         c1 = counters(time.time())
         r1 = restarts()

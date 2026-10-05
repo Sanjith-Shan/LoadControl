@@ -99,7 +99,8 @@ type service struct {
 	maxConc, running int
 	waitq            []func()
 
-	dbTODO   bool // MongoDB queried with context.TODO(): never cancelled
+	proc     *proc // its Go process, for cpu=procs
+	dbTODO   bool  // MongoDB queried with context.TODO(): never cancelled
 	pool     int
 	poolUsed int
 	poolQ    []func()
@@ -113,6 +114,7 @@ type cache struct {
 	present  []bool
 	perReq   int
 	disabled int64 // fills are dropped until this time (cold-cache trigger)
+	proc     *proc // the memcached process
 }
 
 // info is the priority a request carries on every hop.
@@ -148,9 +150,9 @@ func (s *Sim) serve(h *handler, a *ctx, in info, n int, respond func(reply)) {
 		c = s.newCtx(nil, dl, true)
 	}
 	if v.http && s.P.HiddenMS > 0 {
-		s.run(s.work(s.P.HiddenMS), func() {})
+		s.run(s.host, s.work(s.P.HiddenMS), func() {})
 	}
-	s.run(s.work(s.P.RPCServerMS), func() { s.admit(h, c, in, respond) })
+	s.run(v.proc, s.work(s.P.RPCServerMS), func() { s.admit(h, c, in, respond) })
 }
 
 // admit is Server.Admit: deadline check, rate limit, DAGOR, limiter.
@@ -313,7 +315,7 @@ func (e *exec) next() {
 	case stCPU:
 		w := s.work(e.h.cpu) + e.debt
 		e.debt = 0
-		s.run(w, e.next)
+		s.run(e.h.svc.proc, w, e.next)
 	case stCall:
 		s.call(e, st.to)
 	case stCache:
@@ -327,7 +329,7 @@ func (e *exec) finish(rc code) {
 	if e.debt > 0 {
 		d := e.debt
 		e.debt = 0
-		e.s.run(d, func() { e.done(rc) })
+		e.s.run(e.h.svc.proc, d, func() { e.done(rc) })
 		return
 	}
 	e.done(rc)
@@ -482,30 +484,35 @@ func (s *Sim) backoff(b retry.Backoff, n int) time.Duration {
 // for it, so cancelled requests do not warm the cache.
 func (s *Sim) cacheRead(e *exec, ca *cache) {
 	k := ca.perReq
-	s.run(s.work(s.P.MemcMS+s.P.MemcKeyMS*float64(k)), func() {
-		st := s.sec()
-		var miss []int
-		for range k {
-			key := s.rKey.IntN(len(ca.present))
-			st.looks[ca.id]++
-			if ca.present[key] && s.now >= ca.disabled {
-				st.hits[ca.id]++
-			} else {
-				miss = append(miss, key)
-			}
-		}
-		if len(miss) == 0 {
-			e.next()
-			return
-		}
-		s.dbOp(e, len(miss), func() {
-			s.run(s.work(s.P.MemcMS), func() {
-				if s.now >= ca.disabled {
-					for _, key := range miss {
-						ca.present[key] = true
-					}
+	d := s.dep("memc-" + ca.name)
+	s.run(ca.proc, s.work(s.P.MemcMS+s.P.MemcKeyMS*float64(k)), func() {
+		s.at(s.now+d.extra, func() {
+			st := s.sec()
+			var miss []int
+			for range k {
+				key := s.rKey.IntN(len(ca.present))
+				st.looks[ca.id]++
+				if ca.present[key] && s.now >= ca.disabled && !d.down {
+					st.hits[ca.id]++
+				} else {
+					miss = append(miss, key)
 				}
+			}
+			if len(miss) == 0 {
 				e.next()
+				return
+			}
+			s.dbOp(e, len(miss), func() {
+				s.run(ca.proc, s.work(s.P.MemcMS), func() {
+					s.at(s.now+d.extra, func() {
+						if s.now >= ca.disabled && !d.down {
+							for _, key := range miss {
+								ca.present[key] = true
+							}
+						}
+						e.next()
+					})
+				})
 			})
 		})
 	})
@@ -537,17 +544,25 @@ func (s *Sim) dbOp(e *exec, keys int, then func()) {
 			s.poolRelease(v) // gave up while queued for a connection
 			return
 		}
-		hold := ms(s.P.Mongo.IOMS)
-		if sl := s.P.Slow; sl.ExtraMS > 0 && sl.hits(v.name) && s.now >= ms(sl.At*1e3) && s.now < ms((sl.At+sl.Dur)*1e3) {
-			hold += ms(sl.ExtraMS)
+		d := s.dep("mongo-" + v.name)
+		if d.down { // connection refused: the handler returns the error
+			s.poolRelease(v)
+			if !over {
+				over = true
+				e.finish(Internal)
+			}
+			return
 		}
-		s.at(s.now+hold, func() {
-			s.run(s.work(s.P.Mongo.OpMS+s.P.Mongo.KeyMS*float64(keys)), func() {
-				s.poolRelease(v)
-				if !over {
-					over = true
-					then()
-				}
+		s.at(s.now+ms(s.P.Mongo.IOMS), func() {
+			s.run(s.mongoProc[v.name], s.work(s.P.Mongo.OpMS+s.P.Mongo.KeyMS*float64(keys)), func() {
+				// toxiproxy delays the response stream
+				s.at(s.now+d.extra, func() {
+					s.poolRelease(v)
+					if !over {
+						over = true
+						then()
+					}
+				})
 			})
 		})
 	}

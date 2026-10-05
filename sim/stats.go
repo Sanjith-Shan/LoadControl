@@ -9,22 +9,27 @@ import (
 // sec accumulates one simulated second. Arrivals count in the second they
 // arrive, outcomes in the second they end.
 type sec struct {
-	offered, completed, success, goodput, failed, timeout int64
-	tier                                                  [3]struct{ offered, completed, success, goodput int64 }
-	lat                                                   [3][]float64 // ms, successful requests
-	shed                                                  [nSvc][nShed]int64
-	att                                                   [nSvc][2]int64 // inbound original, retry
-	user                                                  [2]int64
-	leaf, mongo                                           int64
-	looks, hits                                           [3]int64
-	local                                                 [nLocal]int64
-	limit, inflight, queue                                [nSvc]int
-	util                                                  float64
-	jobs                                                  int
+	offered, completed, success, goodput int64
+	out                                  [nOut]int64 // final outcomes as cmd/loadgen counts them
+	tier                                 [3]struct{ offered, completed, success, goodput int64 }
+	lat                                  [3][]float64 // ms, successful requests
+	shed                                 [nSvc][nShed]int64
+	att                                  [nSvc][2]int64 // inbound original, retry
+	user                                 [2]int64
+	leaf, mongo                          int64
+	looks, hits                          [3]int64
+	local                                [nLocal]int64
+	limit, inflight, queue               [nSvc]int
+	util                                 float64
+	jobs                                 int
 }
 
+// sec is the current second's stats; the warm-up phase goes to scratch.
 func (s *Sim) sec() *sec {
-	i := int(s.now / 1e9)
+	if s.now < s.t0 {
+		return &s.scratch
+	}
+	i := int((s.now - s.t0) / 1e9)
 	for len(s.secs) <= i {
 		s.secs = append(s.secs, &sec{})
 	}
@@ -33,7 +38,7 @@ func (s *Sim) sec() *sec {
 
 // tickSecond snapshots gauges at the end of each second.
 func (s *Sim) tickSecond() {
-	i := int(s.now/1e9) - 1
+	i := int((s.now-s.t0)/1e9) - 1
 	for len(s.secs) <= i {
 		s.secs = append(s.secs, &sec{})
 	}
@@ -44,6 +49,9 @@ func (s *Sim) tickSecond() {
 		}
 	}
 	s.cpu.advance(s.now)
+	if i == 0 {
+		s.lastBusy = s.busyAtT0
+	}
 	st.util = (s.cpu.busy - s.lastBusy) / (s.cpu.cores * 1e9)
 	s.lastBusy = s.cpu.busy
 	st.jobs = s.cpu.load()
@@ -52,25 +60,27 @@ func (s *Sim) tickSecond() {
 	}
 }
 
-// endUser records a user request's single outcome: OK (success),
-// DeadlineExceeded (the client timed out) or Internal (an error answer).
-func (s *Sim) endUser(u *ureq, rc code) {
+// endUser records a user request's single outcome.
+func (s *Sim) endUser(u *ureq, o int) {
 	s.outstanding--
+	if u.warm {
+		return
+	}
 	st := s.sec()
 	t := min(int(u.in.Tier), 2)
 	lat := float64(s.now-u.start) / 1e6
 	st.completed++
 	st.tier[t].completed++
-	window := s.now >= ms(s.P.WarmupS*1e3) && s.now < s.endNs
+	st.out[o]++
+	window := s.now >= s.t0+ms(s.P.WarmupS*1e3) && s.now < s.endNs
 	if window {
 		s.typN[u.typ]++
 	}
-	switch rc {
-	case OK:
+	if o == oGood || o == oSlow {
 		st.success++
 		st.tier[t].success++
 		st.lat[t] = append(st.lat[t], lat)
-		if lat <= s.P.SLOMS {
+		if o == oGood {
 			st.goodput++
 			st.tier[t].goodput++
 		}
@@ -78,10 +88,6 @@ func (s *Sim) endUser(u *ureq, rc code) {
 			s.typOK[u.typ]++
 			s.typLat[u.typ] = append(s.typLat[u.typ], lat)
 		}
-	case DeadlineExceeded:
-		st.timeout++
-	default:
-		st.failed++
 	}
 }
 
@@ -98,7 +104,9 @@ type Second struct {
 	Completed   int64                       `json:"completed"`
 	Success     int64                       `json:"success"`
 	Goodput     int64                       `json:"goodput"`
-	Failed      int64                       `json:"failed"`
+	Slow        int64                       `json:"slow"`
+	UserShed    int64                       `json:"user_shed"` // final answer was a 503 shed
+	Failed      int64                       `json:"failed"`    // other 5xx
 	Timeout     int64                       `json:"timeout"`
 	SuccessRate float64                     `json:"success_rate"`
 	Tiers       map[string]TierSec          `json:"tiers"`
@@ -149,9 +157,19 @@ type Summary struct {
 	MeanLimit   map[string]float64          `json:"mean_limit,omitempty"`
 	CPUUtil     float64                     `json:"cpu_util"`
 	RecoveryS   *float64                    `json:"recovery_s,omitempty"` // after the last trigger ends; null if it never recovers
-	Outcomes    [4]int64                    `json:"outcomes"`             // offered, success, failed, timeout over the whole run
+	Totals      Totals                      `json:"totals"`               // whole run including the drain, as cmd/loadgen's summary
 	Events      int64                       `json:"events"`
 	WallMS      float64                     `json:"wall_ms"`
+}
+
+// Totals are user request outcomes over the whole run; they add up to Offered.
+type Totals struct {
+	Offered int64 `json:"offered"`
+	Good    int64 `json:"good"`
+	Slow    int64 `json:"slow"`
+	Shed    int64 `json:"shed"`
+	Error   int64 `json:"error"`
+	Timeout int64 `json:"timeout"`
 }
 
 type TypeSum struct {
@@ -193,10 +211,13 @@ func (s *Sim) result(wall time.Duration) *Result {
 	var limSum [nSvc]float64
 	n := 0
 	for i, st := range s.secs {
-		sum.Outcomes[0] += st.offered
-		sum.Outcomes[1] += st.success
-		sum.Outcomes[2] += st.failed
-		sum.Outcomes[3] += st.timeout
+		t := &sum.Totals
+		t.Offered += st.offered
+		t.Good += st.out[oGood]
+		t.Slow += st.out[oSlow]
+		t.Shed += st.out[oShed]
+		t.Error += st.out[oError]
+		t.Timeout += st.out[oTimeout]
 		if i >= nsec {
 			continue
 		}
@@ -279,7 +300,7 @@ func (s *Sim) result(wall time.Duration) *Result {
 
 func (s *Sim) second(i int, st *sec) Second {
 	o := Second{T: i, Offered: st.offered, Completed: st.completed, Success: st.success, Goodput: st.goodput,
-		Failed: st.failed, Timeout: st.timeout, SuccessRate: round(ratio(st.success, st.completed)),
+		Slow: st.out[oSlow], UserShed: st.out[oShed], Failed: st.out[oError], Timeout: st.out[oTimeout], SuccessRate: round(ratio(st.success, st.completed)),
 		Tiers: map[string]TierSec{}, User: st.user, LeafPerReq: round(ratio(st.leaf, st.offered)), MongoOps: st.mongo,
 		CPUUtil: round(st.util), CPUJobs: st.jobs, Limit: map[string]int{}, Inflight: map[string]int{}, Queue: map[string]int{}}
 	for t, name := range tierNames {
@@ -349,6 +370,12 @@ func (s *Sim) recovery(secs []Second) *float64 {
 			start = t.At
 		}
 		end = max(end, t.At+t.Dur)
+	}
+	for _, f := range s.P.Faults {
+		if start == 0 || f.At < start {
+			start = f.At
+		}
+		end = max(end, f.At)
 	}
 	if start == 0 {
 		return nil

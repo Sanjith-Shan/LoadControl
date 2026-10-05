@@ -34,11 +34,15 @@ def cpu(r):
 
 
 def clean(r):
-    """A run is clean if no peer lock was seen and no service restarted."""
+    """A run is clean if no peer lock was seen, no service restarted, and
+    the host was not saturated by something else just before or after it
+    (Windows CPU >= 90% outside the run; during a run the WSL VM alone
+    keeps it near 60%)."""
     L = r["load"]
     peer = any((L.get(k) or {}).get("peer_lock") for k in ("before", "mid", "after"))
     rs = sum(v or 0 for v in r.get("restarts", {}).values())
-    return not peer and rs == 0
+    host = any(((L.get(k) or {}).get("windows_cpu_pct") or 0) >= 90 for k in ("before", "after"))
+    return not peer and rs == 0 and not host
 
 
 def fmt(x, d=1):
