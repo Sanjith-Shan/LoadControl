@@ -219,6 +219,94 @@ def window_table(file, title, desc, windows):
     print()
 
 
+def sim_table():
+    rows = load("sim_replay.jsonl")
+    if not rows:
+        return
+    print("## M3 simulator against every recorded run, results/sim_replay.jsonl\n")
+    print("One calibrated parameter set (sim/params.calibrated.json) replays each run's config, load, faults and "
+          "user behavior. Error is simulated minus measured goodput. Relative error only where measured goodput "
+          "is at least 5 req/s. Contaminated runs (clean() rule) are excluded.\n")
+    print("| experiment | runs | median abs error req/s | median rel error | worst rel error | within 10% |")
+    print("|---|---|---|---|---|---|")
+    g = defaultdict(list)
+    for r in rows:
+        if r.get("contaminated") or r.get("skipped"):
+            continue
+        g[r["exp"]].append(r)
+    allr = []
+    for e in sorted(g):
+        rs = g[e]
+        ab = [abs(r["abs_err_good_rps"]) for r in rs if r.get("abs_err_good_rps") is not None]
+        rel = [abs(r["rel_err_good"]) for r in rs if r.get("rel_err_good") is not None and r["measured"]["good_rps"] >= 5]
+        allr += rs
+        print(f"| {e} | {len(rs)} | {fmt(st.median(ab)) if ab else 'n/a'} | {fmt(100 * st.median(rel)) + '%' if rel else 'n/a'} | "
+              f"{fmt(100 * max(rel)) + '%' if rel else 'n/a'} | {sum(x <= 0.1 for x in rel)}/{len(rel)} |")
+    ab = [abs(r["abs_err_good_rps"]) for r in allr if r.get("abs_err_good_rps") is not None]
+    rel = [abs(r["rel_err_good"]) for r in allr if r.get("rel_err_good") is not None and r["measured"]["good_rps"] >= 5]
+    if ab:
+        print(f"| all | {len(allr)} | {fmt(st.median(ab))} | {fmt(100 * st.median(rel))}% | {fmt(100 * max(rel))}% | {sum(x <= 0.1 for x in rel)}/{len(rel)} |")
+    print()
+
+
+def microbench():
+    rows = load("exp7_microbench.jsonl")
+    if not rows:
+        return
+    r = rows[-1]
+    b = r["benchmarks"]
+    print("## exp7 middleware overhead (Go benchmarks), results/exp7_microbench.jsonl\n")
+    print(f"Run on the benchmark VM ({r['machine']['cpu']}, {r['machine']['vcpus']} vCPUs) while holding the bench "
+          f"lock, nothing else running; median of 6 runs of 2 s each.\n")
+    print("| benchmark | ns/op | B/op | allocs/op |")
+    print("|---|---|---|---|")
+    for k in sorted(b):
+        print(f"| {k} | {fmt(b[k]['ns_op_median'], 0)} | {b[k]['bytes_op']} | {b[k]['allocs_op']} |")
+    for path in ("bufconn", "tcp"):
+        bare = b.get(f"BenchmarkUnaryBare/{path}")
+        full = b.get(f"BenchmarkUnaryInterceptors/{path}")
+        if bare and full:
+            print(f"\nAdded per call over {path}: **{(full['ns_op_median'] - bare['ns_op_median']) / 1000:.1f} us** "
+                  f"({bare['ns_op_median'] / 1000:.1f} us bare, {full['ns_op_median'] / 1000:.1f} us with every piece on).")
+    print()
+
+
+def wrk2():
+    rows = load("wrk2_crosscheck.jsonl")
+    if not rows:
+        return
+    print("## loadgen cross-checked against the benchmark's wrk2, results/wrk2_crosscheck.jsonl\n")
+    print("Same no-control stack, same rates, the benchmark's own wrk2 and Lua script against cmd/loadgen.\n")
+    print("| rate | tool | achieved req/s | p50 ms | p99 ms |")
+    print("|---|---|---|---|---|")
+    for r in rows:
+        if r["name"].startswith("wrk2"):
+            print(f"| {r['rate']} | wrk2 | {fmt(r['requests_per_s'])} | {fmt(r['p50_ms'])} | {fmt(r['p99_ms'])} |")
+        else:
+            s = r["summary"]
+            print(f"| {r['rate']} | loadgen | {fmt((s['good'] + s['slow']) / r['duration_s'])} | {fmt(s['p50_ms'])} | {fmt(s['p99_ms'])} |")
+    print()
+
+
+def step_table():
+    rows = [r for r in load("exp6_algorithms.jsonl") if r["name"].endswith("-step")]
+    if not rows:
+        return
+    print("## exp6 step response, results/exp6_algorithms.jsonl (`-step` runs)\n")
+    print("Offered 0.5x (200 req/s) for 20 s, 3x (1,200 req/s) from 20 s to 60 s, then 0.5x again. Goodput "
+          "averaged per window; 'back to 90%' is the first second after 60 s from which goodput stays at >= 180 "
+          "req/s for 5 s.\n")
+    print("| run | 5-20 s | 25-60 s | 65-90 s | back to 90% after s | p99 ms (whole run) | clean |")
+    print("|---|---|---|---|---|---|---|")
+    for r in rows:
+        g = {x["t"]: x["good"] for x in r["series"]}
+        w = lambda a, b: smean(g.get(t, 0) for t in range(a, b))
+        back = next((t - 60 for t in range(60, 86) if all(g.get(u, 0) >= 180 for u in range(t, t + 5))), None)
+        print(f"| {r['name']} | {fmt(w(5, 20))} | {fmt(w(25, 60))} | {fmt(w(65, 90))} | "
+              f"{'never' if back is None else back} | {fmt(r['summary']['p99_ms'])} | {clean(r)} |")
+    print()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cap", type=float, default=0)
@@ -240,7 +328,11 @@ def main():
                  [(10, 30), (40, 90), (95, 120)])
     table("exp5_false_shedding.jsonl", "exp5 shedding below capacity", cap)
     table("exp6_algorithms.jsonl", "exp6 algorithm comparison", cap)
+    step_table()
     table("exp7_overhead_e2e.jsonl", "exp7 end-to-end overhead at low load", cap)
+    microbench()
+    wrk2()
+    sim_table()
 
 
 if __name__ == "__main__":

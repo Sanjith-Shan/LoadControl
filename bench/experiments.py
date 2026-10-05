@@ -87,10 +87,11 @@ def exp1(a):
     cfgs = baselines(a.cap, a.conc)
     cfgs["gradient2"] = (merge(lim("gradient2"), DEADLINE), "Gradient2 at every service + deadline drop")
     cfgs["full"] = (full(), "LoadControl, every piece on")
+    cfgs["full-aimd"] = (full("aimd"), "LoadControl, every piece on, AIMD instead of Gradient2")
     for rep in range(a.reps):
         for x in (a.loads or [1, 1.5, 2, 3, 4]):
             for name, (env, c) in cfgs.items():
-                if a.only and name not in a.only:
+                if (a.only and name not in a.only) or (not a.only and name == "full-aimd"):
                     continue
                 run("exp1", f"{name}-{x}x", env, c, out, rate=round(a.cap * x), note=f"rep {rep}")
 
@@ -192,12 +193,13 @@ def exp5(a):
     out = a.out or os.path.join(REPO, "results", "exp5_false_shedding.jsonl")
     cfgs = {
         "full": (full(), "LoadControl, every piece on"),
+        "full-aimd": (full("aimd"), "LoadControl, every piece on, AIMD instead of Gradient2"),
         "aimd": (merge(lim("aimd"), DEADLINE), "AIMD + deadline"),
         "vegas": (merge(lim("vegas"), DEADLINE), "Vegas + deadline"),
         "gradient2": (merge(lim("gradient2"), DEADLINE), "Gradient2 + deadline"),
     }
     for rep in range(a.reps):
-        for x in [0.25, 0.5, 0.75, 0.9]:
+        for x in (a.loads or [0.25, 0.5, 0.75, 0.9]):
             for name, (env, c) in cfgs.items():
                 if a.only and name not in a.only:
                     continue

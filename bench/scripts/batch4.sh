@@ -20,3 +20,5 @@ bash bench/scripts/with_lock.sh bash bench/scripts/microbench.sh
 bash bench/scripts/wrk2_check.sh
 $E exp3 --cap 400 --conc 32 --trigger hogw
 $E exp8 --cap 400 --conc 32 --trigger hogw
+$E exp1 --cap 400 --conc 32 --loads 3 --only full-aimd --reps 2
+$E exp5 --cap 400 --conc 32 --loads 0.5,0.9 --only full-aimd
