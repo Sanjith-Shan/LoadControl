@@ -59,3 +59,15 @@
 - Symptom: the frontend still retried search during the fault, although search marked its failures `x-lc-no-retry`.
 - Cause: the frontend's per-try timeout (800 ms) was shorter than search's three 250 ms attempts plus overhead. The frontend gave up on its own timer before search's marked failure arrived, and its own timeout is retryable.
 - Fix: the rule only holds if each layer's per-try timeout exceeds the total retry time below it, or the caller's retries are budgeted. With the gRFC A6 budget at every hop the count was 1.68 even with users retrying. DESIGN.md states the nesting requirement.
+
+## B11: a bulk image import into k3d failed half way and still reported success
+- Found by: `kubectl get pods`, every service pod in `ErrImageNeverPull` after `k3d image import` printed "Successfully imported 8 image(s)".
+- Symptom: the k3d phase stopped at `kubectl wait` with the Compose stack already stopped.
+- Cause: k3d saves all images into one tarball and imports it into the node; the import into the node failed (logged as an error) but the command's summary and exit status said it worked.
+- Fix: `bench/scripts/k3d_continue.sh` imports images one at a time and checks `crictl images` in the node after each, retrying up to three times.
+
+## B12: the bench lock was left behind after a multi-line command
+- Found by: the k3d phase waiting on a lock whose owning process no longer existed.
+- Symptom: everything stalled behind `/tmp/BENCH_LOCK`.
+- Cause: `with_lock.sh` wrote the whole command into the lock file. A multi-line command made the file multi-line, and the exit trap compared the first field of every line with "loadcontrol", which no longer matched, so the lock was never removed.
+- Fix: the lock line holds only the first line of the command, cut to 80 characters, and the trap compares the owner and pid on the first line.
