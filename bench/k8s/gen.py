@@ -87,8 +87,16 @@ def main():
     docs.append("apiVersion: v1\nkind: ConfigMap\nmetadata: { name: lc-env }\ndata: {}\n")
     docs.append(simple("consul", "hashicorp/consul:1.20", [8500, 8600]))
     docs.append(simple("jaeger", "jaegertracing/all-in-one:1.62.0", [16686, 6831]))
+    # Each cache pod carries a tc sidecar with NET_ADMIN so netem faults can
+    # be injected into the pod's network namespace, as on Compose.
+    tc_sidecar = """
+        - name: tc
+          image: loadcontrol/tc:latest
+          imagePullPolicy: Never
+          command: [ "sleep", "infinity" ]
+          securityContext: { capabilities: { add: [ "NET_ADMIN" ] } }"""
     for m in ["rate", "profile", "reserve"]:
-        docs.append(simple(f"memcached-{m}", "memcached:1.6", [11211], '[ "-m", "128", "-t", "2" ]'))
+        docs.append(simple(f"memcached-{m}", "memcached:1.6", [11211], '[ "-m", "128", "-t", "2" ]', tc_sidecar))
     for m in ["geo", "profile", "rate", "recommendation", "reservation", "user"]:
         docs.append(simple(f"mongodb-{m}", "mongo:5.0", [27017], '[ "--wiredTigerCacheSizeGB", "0.25", "--quiet" ]'))
     prom_mount = """
