@@ -99,9 +99,10 @@ def exp1(a):
 def exp_conc_sweep(a):
     """Pick the static concurrency baseline fairly: the best fixed limit at 2x."""
     out = a.out or os.path.join(REPO, "results", "exp1_fixedconc_sweep.jsonl")
+    mult = a.x or 2
     for n in (a.ns or [2, 4, 8, 16, 32]):
-        run("exp1sweep", f"fixedconc{n}-2x", {"LC_FRONTEND_LIMIT": f"fixed:{n}"},
-            f"static concurrency limit {n} at the frontend", out, rate=round(a.cap * 2))
+        run("exp1sweep", f"fixedconc{n}-{mult:g}x", {"LC_FRONTEND_LIMIT": f"fixed:{n}"},
+            f"static concurrency limit {n} at the frontend", out, rate=round(a.cap * mult))
 
 
 def exp2(a):

@@ -22,3 +22,5 @@ $E exp3 --cap 400 --conc 32 --trigger hogw
 $E exp8 --cap 400 --conc 32 --trigger hogw
 $E exp1 --cap 400 --conc 32 --loads 3 --only full-aimd --reps 2
 $E exp5 --cap 400 --conc 32 --loads 0.5,0.9 --only full-aimd
+$E exp_conc_sweep --cap 400 --x 3 --ns 32,64,128,256
+$E exp_conc_sweep --cap 350 --ns 64,256
