@@ -332,6 +332,9 @@ def main():
     table("exp7_overhead_e2e.jsonl", "exp7 end-to-end overhead at low load", cap)
     microbench()
     wrk2()
+    table("k8s_exp1_goodput.jsonl", "M5 on Kubernetes (one-node k3d on the same VM): goodput at 1,200 req/s offered", cap)
+    exp3_table("k8s_exp3_metastable.jsonl", "M5 on Kubernetes: metastable recovery",
+               "Same trigger and load as exp3 `-memc`, on one-node k3d (the k3s control plane and kube-proxy share the same 2 vCPUs, so capacity is lower than on Compose and was not remeasured; read the goodput as absolute req/s, not as a share of the Compose capacity).")
     sim_table()
 
 

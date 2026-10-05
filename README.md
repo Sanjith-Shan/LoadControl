@@ -76,12 +76,18 @@ because on a shared VM the contention is between processes, which Go's
 scheduler cannot see. Both are in [BUG_LOG.md](BUG_LOG.md) and
 [DESIGN.md](DESIGN.md).
 
-<!-- K8S -->
+**On Kubernetes.** The same images, config and faults on a one-node k3d
+cluster (on the same VM, so k3s itself takes some of the CPU): at 1,200 req/s
+offered, no control delivers 0.4 req/s and LoadControl 209 req/s; under the
+cache trigger the uncontrolled system never recovered (2 of 2) and LoadControl
+recovered in 1 s and 29 s.
 
 **The simulator** (`sim/`) runs the library's own policy code on a virtual
-clock and replays every recorded run with one calibrated parameter set; its
-error against the measured runs is in NUMBERS.md, and it is worst in deep
-overload just past the capacity cliff, where it is not trusted.
+clock and replays every recorded run with one calibrated parameter set:
+median goodput error 11% over 165 runs, 1% at or below capacity. It is not
+trusted in deep overload just past the capacity cliff, and it does not
+reproduce the measured metastable failures; [sim/README.md](sim/README.md)
+says what it captures and what it misses.
 
 ## The pieces
 

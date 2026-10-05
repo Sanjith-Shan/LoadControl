@@ -38,8 +38,10 @@ cliff is large (e.g. 360 and 412 good/s at the same 450 req/s offered).
 | 12 | Algorithms at 3x | AIMD 348 req/s (p99 842 ms), Gradient2 318 (p99 208 ms), Vegas 240 (p99 79 ms); SRE client throttle alone **2.7 req/s**, and after a 3x step it **did not recover** when load fell back to 0.5x (27 req/s for the last 25 s) | `exp6_algorithms.jsonl` |
 | 13 | Capacity shift (weighted CPU hog from 30 s to 90 s at 0.9x, no retries) | no control: 35 req/s during, **0 after the hog left**; static rate limit 85 during, 360 after; LoadControl 144 during, 330 after (1 run each) | `exp8_capacity_shift.jsonl` `*-hogw` |
 | 14 | Middleware cost per call, every piece on | **+17.6 us** in process (bufconn, 47.8 to 65.4 us), +42 us over loopback TCP; admission path alone 609 ns vs 250 ns bare | `exp7_microbench.jsonl` |
-| 15 | Simulator against measured runs | see the M3 table below (median relative goodput error over all clean runs, one calibrated parameter set) | `sim_replay.jsonl` |
-| 16 | Bugs logged | **10**, each with what found it | `BUG_LOG.md` |
+| 15 | Same experiments on Kubernetes (one-node k3d, same VM) | at 1,200 req/s offered: no control **0.4 req/s**, LoadControl **209 req/s** (2 runs each; k3s itself shares the 2 vCPUs, so capacity there is lower and was not remeasured). Metastable trigger: no control never recovered (2 of 2); LoadControl recovered in **1 s and 29 s** | `k8s_exp1_goodput.jsonl`, `k8s_exp3_metastable.jsonl` |
+| 16 | Load generator vs the benchmark's own wrk2 | throughput within 1.5% at 200, 300 and 400 req/s; cmd/loadgen reports higher latency (p99 696 vs 451 ms at 400), plausibly because it opens a connection per concurrent request where wrk2 keeps 64 | `wrk2_crosscheck.jsonl` |
+| 17 | Simulator against measured runs | median relative goodput error **11%** over 165 clean runs (77 within 10%); 1% at or below capacity with no control, 34% for small static limits; it does **not** reproduce the measured metastable failures (see sim/README.md) | `sim_replay.jsonl` |
+| 18 | Bugs logged | **12**, each with what found it | `BUG_LOG.md` |
 
 ## What is not quotable
 
@@ -291,16 +293,54 @@ Added per call over bufconn: **17.6 us** (47.8 us bare, 65.4 us with every piece
 
 Added per call over tcp: **42.1 us** (119.6 us bare, 161.8 us with every piece on).
 
+## loadgen cross-checked against the benchmark's wrk2, results/wrk2_crosscheck.jsonl
+
+Same no-control stack, same rates, the benchmark's own wrk2 and Lua script against cmd/loadgen.
+
+| rate | tool | achieved req/s | p50 ms | p99 ms |
+|---|---|---|---|---|
+| 200.0 | loadgen | 200.0 | 7.1 | 65.1 |
+| 200 | wrk2 | 197.0 | 7.8 | 50.5 |
+| 300.0 | loadgen | 300.0 | 19.2 | 169.4 |
+| 300 | wrk2 | 298.1 | 14.3 | 106.3 |
+| 400.0 | loadgen | 398.6 | 62.0 | 696.0 |
+| 400 | wrk2 | 397.5 | 43.6 | 451.3 |
+
+## M5 on Kubernetes (one-node k3d on the same VM): goodput at 1,200 req/s offered, results/k8s_exp1_goodput.jsonl
+
+| run | n | goodput req/s | % of capacity | shed | errors | timeouts | p50 ms | p99 ms | tier0 p99 ms | tier0 success | VM CPU % | clean/all |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| off-3x | 2 | 0.4 | 0.1 | 0 | 3276 | 68696 | 327.2 | 822.2 | 761.0 | 0.001 | 95 | 2/2 |
+| full-3x | 2 | 208.9 | 52.4 | 59377 | 91 | 0 | 100.0 | 291.0 | 284.0 | 0.691 | 92 | 2/2 |
+
+## M5 on Kubernetes: metastable recovery, results/k8s_exp3_metastable.jsonl
+
+Same trigger and load as exp3 `-memc`, on one-node k3d (the k3s control plane and kube-proxy share the same 2 vCPUs, so capacity is lower than on Compose and was not remeasured; read the goodput as absolute req/s, not as a share of the Compose capacity). Recovery = seconds after the trigger is removed until goodput stays at >= 90% of its pre-trigger mean (20-30 s) for 10 s; 'never' means not before the run ended.
+
+| run | pre-trigger goodput | trigger cleared at s | goodput during last 50 s | recovery s | user attempts per request | clean |
+|---|---|---|---|---|---|---|
+| off-userretry-0.7x-memc | 26.9 | 52.7 | 0.0 | never | 3.72 | True |
+| full-userretry-0.7x-memc | 267.3 | 51.5 | 268.9 | 1 | 1.60 | True |
+| off-userretry-0.7x-memc | 278.8 | 52.4 | 0.0 | never | 3.50 | True |
+| full-userretry-0.7x-memc | 264.2 | 51.5 | 270.6 | 29 | 1.61 | True |
+
 ## M3 simulator against every recorded run, results/sim_replay.jsonl
 
 One calibrated parameter set (sim/params.calibrated.json) replays each run's config, load, faults and user behavior. Error is simulated minus measured goodput. Relative error only where measured goodput is at least 5 req/s. Contaminated runs (clean() rule) are excluded.
 
 | experiment | runs | median abs error req/s | median rel error | worst rel error | within 10% |
 |---|---|---|---|---|---|
-| exp0 | 18 | 2.7 | 0.8% | 74.7% | 15/18 |
-| exp1 | 18 | 43.3 | 13.3% | 78.7% | 5/17 |
-| exp1sweep | 5 | 66.3 | 34.4% | 55.7% | 1/5 |
-| exp3 | 1 | 25.0 | 9.9% | 9.9% | 1/1 |
+| exp0 | 15 | 2.5 | 0.6% | 74.7% | 12/15 |
+| exp1 | 34 | 41.2 | 12.5% | 1,060.6% | 11/31 |
+| exp1sweep | 13 | 90.9 | 34.4% | 72.5% | 1/13 |
+| exp2 | 27 | 41.1 | 11.3% | 80.4% | 9/23 |
+| exp3 | 22 | 11.0 | 4.4% | 480.8% | 13/22 |
+| exp4 | 11 | 23.9 | 25.0% | 35.1% | 0/11 |
+| exp5 | 19 | 1.4 | 0.7% | 26.4% | 16/19 |
+| exp6 | 13 | 42.4 | 16.8% | 122.6% | 3/12 |
+| exp7 | 2 | 0.0 | 0.0% | 0.0% | 2/2 |
+| exp8 | 8 | 113.5 | 46.2% | 224.8% | 2/8 |
 | tuning | 6 | 11.1 | 3.7% | 15.0% | 5/6 |
-| all | 48 | 22.9 | 8.4% | 78.7% | 27/47 |
+| wrk2check | 3 | 0.0 | 0.0% | 1.3% | 3/3 |
+| all | 173 | 32.9 | 11.0% | 1,060.6% | 77/165 |
 

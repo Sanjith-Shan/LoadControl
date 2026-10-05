@@ -38,8 +38,10 @@ cliff is large (e.g. 360 and 412 good/s at the same 450 req/s offered).
 | 12 | Algorithms at 3x | AIMD 348 req/s (p99 842 ms), Gradient2 318 (p99 208 ms), Vegas 240 (p99 79 ms); SRE client throttle alone **2.7 req/s**, and after a 3x step it **did not recover** when load fell back to 0.5x (27 req/s for the last 25 s) | `exp6_algorithms.jsonl` |
 | 13 | Capacity shift (weighted CPU hog from 30 s to 90 s at 0.9x, no retries) | no control: 35 req/s during, **0 after the hog left**; static rate limit 85 during, 360 after; LoadControl 144 during, 330 after (1 run each) | `exp8_capacity_shift.jsonl` `*-hogw` |
 | 14 | Middleware cost per call, every piece on | **+17.6 us** in process (bufconn, 47.8 to 65.4 us), +42 us over loopback TCP; admission path alone 609 ns vs 250 ns bare | `exp7_microbench.jsonl` |
-| 15 | Simulator against measured runs | see the M3 table below (median relative goodput error over all clean runs, one calibrated parameter set) | `sim_replay.jsonl` |
-| 16 | Bugs logged | **10**, each with what found it | `BUG_LOG.md` |
+| 15 | Same experiments on Kubernetes (one-node k3d, same VM) | at 1,200 req/s offered: no control **0.4 req/s**, LoadControl **209 req/s** (2 runs each; k3s itself shares the 2 vCPUs, so capacity there is lower and was not remeasured). Metastable trigger: no control never recovered (2 of 2); LoadControl recovered in **1 s and 29 s** | `k8s_exp1_goodput.jsonl`, `k8s_exp3_metastable.jsonl` |
+| 16 | Load generator vs the benchmark's own wrk2 | throughput within 1.5% at 200, 300 and 400 req/s; cmd/loadgen reports higher latency (p99 696 vs 451 ms at 400), plausibly because it opens a connection per concurrent request where wrk2 keeps 64 | `wrk2_crosscheck.jsonl` |
+| 17 | Simulator against measured runs | median relative goodput error **11%** over 165 clean runs (77 within 10%); 1% at or below capacity with no control, 34% for small static limits; it does **not** reproduce the measured metastable failures (see sim/README.md) | `sim_replay.jsonl` |
+| 18 | Bugs logged | **12**, each with what found it | `BUG_LOG.md` |
 
 ## What is not quotable
 
