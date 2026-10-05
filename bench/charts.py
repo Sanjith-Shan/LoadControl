@@ -143,16 +143,68 @@ def metastable_chart(fname, want, title, subtitle, out):
         rs = [r for r in rows if r["name"] == name]
         if not rs:
             continue
-        r = rs[-1]
-        ser = {s["t"]: s["good"] for s in r["series"]}
+        # mean over every clean run of this configuration, not a chosen one
+        sers = [{s["t"]: s["good"] for s in r["series"]} for r in rs]
         pts = []
         for t in range(0, 150, 5):
-            pts.append((t + 2.5, st.mean(ser.get(u, 0) for u in range(t, t + 5))))
+            pts.append((t + 2.5, st.mean(st.mean(ser.get(u, 0) for u in range(t, t + 5)) for ser in sers)))
+        label = f"{label} ({len(rs)} runs)" if len(rs) > 1 else label
         c.line(pts, SERIES[i], label, markers=False)
         labels.append((c.Y(pts[-1][1]), SERIES[i], label))
     for y, col, t in spread_labels(labels):
         c.label_end(y, col, t)
     c.save(out)
+
+
+def hbars(title, subtitle, items, unit, out, vmax, fmt_v=lambda v: f"{v:.0f}"):
+    """Single-series horizontal bars (one color, so no legend), values
+    labelled at the bar end, 4 px rounded data end."""
+    rowh, top, left = 34, 70, 250
+    w, h = 780, top + rowh * len(items) + 40
+    o = [f"<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}' viewBox='0 0 {w} {h}' {FONT}>",
+         f"<rect width='{w}' height='{h}' fill='{SURFACE}'/>",
+         f"<text x='24' y='26' font-size='16' font-weight='600' fill='{INK}'>{title}</text>",
+         f"<text x='24' y='45' font-size='12' fill='{INK2}'>{subtitle}</text>"]
+    span = w - left - 90
+    for i, (label, v, highlight) in enumerate(items):
+        y = top + i * rowh
+        bw = max(2, span * v / vmax)
+        col = SERIES[0] if highlight else "#9fb8d9"
+        o.append(f"<text x='{left - 10}' y='{y + 17}' font-size='12' fill='{INK}' text-anchor='end'>{label}</text>")
+        o.append(f"<path d='M{left},{y + 5} h{bw - 4:.1f} a4,4 0 0 1 4,4 v12 a4,4 0 0 1 -4,4 h-{bw - 4:.1f} z' fill='{col}'><title>{label}: {fmt_v(v)}{unit}</title></path>")
+        o.append(f"<text x='{left + bw + 6:.1f}' y='{y + 18}' font-size='12' fill='{INK}'>{fmt_v(v)}{unit}</text>")
+    o.append(f"<line x1='{left}' x2='{left}' y1='{top}' y2='{top + rowh * len(items)}' stroke='{INK2}' stroke-width='1'/>")
+    o.append("</svg>")
+    os.makedirs(DOCS, exist_ok=True)
+    open(os.path.join(DOCS, out), "w", newline="\n").write("\n".join(o) + "\n")
+
+
+def priority_chart():
+    rows = [r for r in load("exp2_priority.jsonl") if clean(r)]
+    g = defaultdict(list)
+    for r in rows:
+        g[r["name"]].append(r["summary"]["tiers_summary"]["0"].get("success_rate", 0) * 100)
+    names = [("off", "no control", False), ("ratelimit", "static rate limit", False),
+             ("fixedconc", "static concurrency limit", False), ("gradient2-notiers", "Gradient2, no tiers", False),
+             ("gradient2-shares", "Gradient2 + tier shares", True), ("gradient2-shares-queue", "+ 20 ms priority queue", True),
+             ("full", "LoadControl, all pieces", True)]
+    items = [(label, st.mean(g[k]), hl) for k, label, hl in names if g.get(k)]
+    hbars("Top-priority requests served at 3x overload", "tier 0 is 20% of traffic; mean of clean runs (results/exp2_priority.jsonl)",
+          items, "%", "priority.svg", 100)
+
+
+def amplification_chart():
+    rows = load("exp4_amplification.jsonl")
+    g = defaultdict(list)
+    for r in rows:
+        ca = r["prometheus"].get("client_attempts", {})
+        sr = sum(v for k, v in ca.items() if "service=srv-search" in k and "target=srv-rate" in k)
+        g[r["name"]].append(sr / (0.6 * r["summary"]["offered"]))
+    names = [("naive", "3 attempts at every hop", False), ("onelayer", "one layer, timeouts not nested", False),
+             ("budget", "retry budget at every hop", True), ("budget-onelayer-userhonors", "budget + one layer, users honor it", True)]
+    items = [(label, st.mean(g[k]), hl) for k, label, hl in names if g.get(k)]
+    hbars("Requests reaching the failing service per user request", "rate's cache +400 ms for 40 s; users retry twice (results/exp4_amplification.jsonl)",
+          items, "x", "amplification.svg", 16, fmt_v=lambda v: f"{v:.2f}")
 
 
 if __name__ == "__main__":
@@ -161,6 +213,8 @@ if __name__ == "__main__":
                      [("full-userretry-0.7x-memc", "LoadControl"), ("off-userretry-0.7x-memc", "no control"),
                       ("naive-userretry-0.7x-memc", "naive retries every hop")],
                      "Recovering from a retry storm",
-                     "0.7x capacity, users retry 3 times; cold caches + 200 ms cache latency from 30 s to 50 s",
+                     "0.7x capacity, users retry 3 times; cold caches + 200 ms cache latency from 30 s to about 53 s; mean of clean runs",
                      "metastable.svg")
+    priority_chart()
+    amplification_chart()
     print("wrote", os.listdir(DOCS))

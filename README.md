@@ -19,7 +19,69 @@ reproduction and the measurements. Every figure below is in
 [NUMBERS.md](NUMBERS.md) with the run it came from, and the runs themselves
 are in `results/*.jsonl` with the machine and its load recorded.
 
-<!-- RESULTS -->
+## Results
+
+All on hotelReservation, whose measured no-control capacity on this machine
+is **398 req/s** of goodput (2xx within 500 ms). Full tables, run counts and
+caveats: [NUMBERS.md](NUMBERS.md).
+
+**A metastable failure, reproduced and recovered from.** At 0.7x capacity
+with users that retry three times, a 20-second trigger (cold caches plus
+200 ms on the cache tier, or a CPU-hogging neighbour) pushes the system over.
+Without control it **never comes back**: zero goodput for the remaining 80 to
+95 s of every run, long after the trigger is gone, because retries alone keep
+it overloaded (2 of 2 runs per trigger; naive per-hop retries the same). With
+LoadControl it is back above 90% of normal goodput **within a second of the
+trigger ending**. In 2 of 4 control runs the uncontrolled system fell into the
+same state with no trigger at all.
+
+![goodput over time through the trigger](docs/metastable.svg)
+
+**Goodput under overload.** At 3x capacity the uncontrolled system delivers
+**2.6 req/s (0.6% of capacity)**. LoadControl holds **79% of capacity with
+Gradient2** (p99 196 ms) or **96% with AIMD** (but p99 847 ms). A hand-tuned
+static concurrency limit does about as well on goodput once tuned (358 req/s
+at 32, 371 at 64), but 256 collapses to 191 and it serves the top tier no
+better than chance; a static rate limit at measured capacity holds at 3x
+(346 req/s, p99 897 ms) and collapses at 4x (5.5 req/s).
+
+![goodput vs offered load](docs/goodput.svg)
+
+**Priority.** With 20% of traffic marked critical at 3x load, tier shares
+plus a 20 ms priority queue serve **88% of critical requests at p99 179 ms**,
+against 27 to 32% for no tiers, a static limit or a rate limit.
+
+![top tier served](docs/priority.svg)
+
+**Retry amplification.** When one dependency stalls, naive retries (3
+attempts at every hop) send **14.75 requests to it per user request**. A
+gRFC A6 retry budget at every hop cuts that to **1.68**; adding the one-layer
+rule with clients that honor it gives **0.99**. The one-layer rule alone leaks
+(4.1) when a caller's per-try timeout is shorter than the retries below it:
+timeouts have to nest.
+
+![amplification](docs/amplification.svg)
+
+**What it costs.** Every piece on adds **18 us per call** in process (47.8 to
+65.4 us over bufconn) and 42 us over loopback TCP; the admission path alone
+is 0.6 us. Below capacity, the AIMD configuration shed **0 of 12,000**
+requests at half load; the Gradient2 one shed 20 (0.17%), and up to 9.7% at
+0.9x, which is the price of its lower latency.
+
+**Things that did not work, measured.** The SRE client-side throttle on its
+own does not protect the service in front of it (2.7 req/s at 3x) and, after
+a load step, stayed shut for its 30 s memory while load was already back to
+half. DAGOR driven by the Go scheduler's run-queue latency never fired here,
+because on a shared VM the contention is between processes, which Go's
+scheduler cannot see. Both are in [BUG_LOG.md](BUG_LOG.md) and
+[DESIGN.md](DESIGN.md).
+
+<!-- K8S -->
+
+**The simulator** (`sim/`) runs the library's own policy code on a virtual
+clock and replays every recorded run with one calibrated parameter set; its
+error against the measured runs is in NUMBERS.md, and it is worst in deep
+overload just past the capacity cliff, where it is not trusted.
 
 ## The pieces
 
