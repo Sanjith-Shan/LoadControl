@@ -5,7 +5,7 @@
 # goodput comparison and the metastable-failure trigger, and tears down.
 cd "$(dirname "$0")/../.."
 export PATH=$HOME/lcwork/bin:$PATH
-bash bench/scripts/wrk2_check.sh || echo "wrk2 check failed"
+[ "$SKIP_WRK2" = 1 ] || bash bench/scripts/wrk2_check.sh || echo "wrk2 check failed"
 bash bench/scripts/with_lock.sh bash -c "cd bench/hotel && docker compose stop && cd ../.. && bash bench/k8s/run_k3d.sh up" || { echo "k3d up failed"; exit 1; }
 export LC_PLATFORM=k8s KUBECTL=$HOME/lcwork/bin/kubectl
 E="python3 bench/experiments.py"
