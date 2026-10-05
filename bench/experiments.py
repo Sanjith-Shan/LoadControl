@@ -96,7 +96,7 @@ def exp1(a):
 def exp_conc_sweep(a):
     """Pick the static concurrency baseline fairly: the best fixed limit at 2x."""
     out = a.out or os.path.join(REPO, "results", "exp1_fixedconc_sweep.jsonl")
-    for n in [2, 4, 8, 16, 32]:
+    for n in (a.ns or [2, 4, 8, 16, 32]):
         run("exp1sweep", f"fixedconc{n}-2x", {"LC_FRONTEND_LIMIT": f"fixed:{n}"},
             f"static concurrency limit {n} at the frontend", out, rate=round(a.cap * 2))
 
@@ -142,7 +142,11 @@ def exp3(a):
             if a.only and name not in a.only:
                 continue
             f = "" if name.endswith("notrigger") else faults
-            run("exp3", f"{name}-{x}x", env, c, out, rate=round(a.cap * x), duration=150, faults=f,
+            r = round(a.cap * x)
+            # Ramp up over 15 s: starting cold at full rate with user retries
+            # can tip the system into the bad state before the trigger.
+            ramp = f"0s:{r // 4},5s:{r // 2},10s:{3 * r // 4},15s:{r}"
+            run("exp3", f"{name}-{x}x", env, c, out, schedule=ramp, duration=150, faults=f,
                 loadgen=USER_RETRIES, note=f"rep {rep}; trigger {TRIGGER_ON}-{TRIGGER_OFF}s: cold caches + mongo +{a.slow_ms} ms")
 
 
@@ -205,6 +209,22 @@ def exp6(a):
             run("exp6", f"{name}-step", env, c, out, schedule=sched, duration=90, note=f"rep {rep}; 0.5x, 3x at 20-60 s, 0.5x")
 
 
+def tuning(a):
+    """Parameter selection for the full configuration, kept as data: shed
+    rate below capacity versus goodput at 3x for a few settings."""
+    out = a.out or os.path.join(REPO, "results", "tuning.jsonl")
+    variants = {
+        "A-shares.6-q5": full(),
+        "B-shares.8-q20": merge(full(), {"LC_TIER_SHARES": "1,0.9,0.8", "LC_QUEUE_WAIT_MS": "20"}),
+        "C-shares.8-q20-min8": merge(full(), {"LC_TIER_SHARES": "1,0.9,0.8", "LC_QUEUE_WAIT_MS": "20", "LC_LIMIT_MIN": "8"}),
+    }
+    for name, env in variants.items():
+        if a.only and name not in a.only:
+            continue
+        for x in (a.loads or [0.75, 3]):
+            run("tuning", f"{name}-{x}x", env, "tuning the full configuration", out, rate=round(a.cap * x))
+
+
 def exp7(a):
     """End-to-end overhead at low load: everything on but nothing to shed."""
     out = a.out or os.path.join(REPO, "results", "exp7_overhead_e2e.jsonl")
@@ -223,10 +243,12 @@ def main():
     ap.add_argument("--x", type=float, default=0)
     ap.add_argument("--slow-ms", type=int, default=100)
     ap.add_argument("--loads", default="", help="override load multiples, e.g. 3,4")
+    ap.add_argument("--ns", default="", help="static limits for exp_conc_sweep")
     ap.add_argument("--out", default="", help="override the results file")
     a = ap.parse_args()
     a.only = [s for s in a.only.split(",") if s]
     a.loads = [float(x) if "." in x else int(x) for x in a.loads.split(",") if x]
+    a.ns = [int(x) for x in a.ns.split(",") if x]
     globals()[a.exp.replace("-", "_")](a)
 
 
