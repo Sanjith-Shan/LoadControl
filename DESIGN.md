@@ -129,6 +129,13 @@ the server-side interceptor when (a) its handler returned an error and
 gave up. The client side records (b) in a per-request flag carried in the
 context, so the application code in between does not need to know about it.
 
+The rule has a precondition the measurements exposed (BUG_LOG B10):
+timeouts must nest. If a caller's per-try timeout is shorter than the time
+the layer below spends on its own retries, the caller gives up on its own
+timer before the marked failure arrives, and its own timeout is retryable.
+Either make each layer's per-try timeout longer than the retry time below
+it, or budget the retries too, which is what the full configuration does.
+
 ## The benchmark and the patch
 
 DeathStarBench hotelReservation (Gan et al., ASPLOS 2019), pinned at commit
