@@ -160,6 +160,24 @@ def reset_db():
         sh(f"bash {REPO}/bench/scripts/reset_db.sh", check=False)
 
 
+HOST_LOG = os.path.join(REPO, "build", "host_cpu.log")
+
+
+def host_cpu(t0, t1):
+    """Host CPU samples (Windows view) between t0 and t1 from
+    scripts/hostcpu.ps1, or None if the sampler is not running."""
+    try:
+        out = []
+        with open(HOST_LOG) as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) == 2 and t0 <= float(parts[0]) <= t1:
+                    out.append(float(parts[1]))
+        return out or None
+    except FileNotFoundError:
+        return None
+
+
 def load_snapshot():
     others = [n for n in sh("docker ps --format '{{.Names}}'", check=False).splitlines()
               if n and not n.startswith("lchotel-") and not n.startswith("k3d-lc")]
@@ -378,7 +396,8 @@ def main():
                "summary": summary, "series": series, "prometheus": prom,
                "restarts": {k: (r1[k] - r0[k]) if None not in (r1[k], r0[k]) else None for k in r0},
                "machine": dict(machine(), platform=PLATFORM), "load": {"before": before, "mid": mid, "after": after,
-                                             "wsl_cpu_pct_per_s": mon.samples}, "note": a.note}
+                                             "wsl_cpu_pct_per_s": mon.samples,
+                                             "host_cpu_pct_per_2s": host_cpu(t0, t1)}, "note": a.note}
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
         with open(a.out, "a") as f:
             f.write(json.dumps(rec) + "\n")

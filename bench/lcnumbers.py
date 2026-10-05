@@ -40,14 +40,19 @@ def cpu(r):
 
 def clean(r):
     """A run is clean if no peer lock was seen, no service restarted, and
-    the host was not saturated by something else just before or after it
-    (Windows CPU >= 90% outside the run; during a run the WSL VM alone
-    keeps it near 60%)."""
+    nothing outside the benchmark competed for the host. The WSL VM
+    saturating its 2 vCPUs shows as 55-65% host CPU; a mid-run sample (or the
+    median of the continuous samples, where recorded) at 72% or more means
+    another process took a core, and 90% before or after means the host was
+    busy around the run."""
     L = r["load"]
     peer = any((L.get(k) or {}).get("peer_lock") for k in ("before", "mid", "after"))
     rs = sum(v or 0 for v in r.get("restarts", {}).values())
-    host = any(((L.get(k) or {}).get("windows_cpu_pct") or 0) >= 90 for k in ("before", "after"))
-    return not peer and rs == 0 and not host
+    around = any(((L.get(k) or {}).get("windows_cpu_pct") or 0) >= 90 for k in ("before", "after"))
+    mid = ((L.get("mid") or {}).get("windows_cpu_pct") or 0) >= 72
+    hs = L.get("host_cpu_pct_per_2s") or []
+    cont = bool(hs) and sorted(hs)[len(hs) // 2] >= 72
+    return not (peer or rs or around or mid or cont)
 
 
 def fmt(x, d=1):
@@ -87,9 +92,10 @@ def table(file, title, cap, extra=None):
     if not rows:
         return
     print(f"## {title}, results/{file}\n")
-    print("| run | n | goodput req/s | % of capacity | shed | errors | timeouts | p50 ms | p99 ms | tier0 p99 ms | tier0 success | VM CPU % | clean |")
+    print("| run | n | goodput req/s | % of capacity | shed | errors | timeouts | p50 ms | p99 ms | tier0 p99 ms | tier0 success | VM CPU % | clean/all |")
     print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
-    for name, rs in by_name(rows).items():
+    for name, rs_all in by_name(rows).items():
+        rs = [r for r in rs_all if clean(r)] or rs_all
         gr = [good_rate(r) for r in rs]
         s = [r["summary"] for r in rs]
         t0 = [x.get("tiers_summary", {}).get("0", {}) for x in s]
@@ -99,7 +105,7 @@ def table(file, title, cap, extra=None):
               f"{fmt(smean(x['p99_ms'] for x in s if x['p99_ms'] is not None))} | "
               f"{fmt(smean(t['p99_ms'] for t in t0 if t.get('p99_ms') is not None))} | "
               f"{fmt(smean(t.get('success_rate', float('nan')) for t in t0), 3)} | "
-              f"{fmt(smean(cpu(r) for r in rs), 0)} | {sum(clean(r) for r in rs)}/{len(rs)} |")
+              f"{fmt(smean(cpu(r) for r in rs), 0)} | {sum(clean(r) for r in rs_all)}/{len(rs_all)} |")
     print()
 
 

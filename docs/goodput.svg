@@ -1,0 +1,64 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='780' height='400' viewBox='0 0 780 400' font-family='-apple-system,Segoe UI,Helvetica,Arial,sans-serif'>
+<rect width='780' height='400' fill='#fcfcfb'/>
+<text x='64' y='26' font-size='16' font-weight='600' fill='#0b0b0b'>Goodput under overload</text>
+<text x='64' y='45' font-size='12' fill='#52514e'>hotelReservation on 2 vCPUs, responses within 500 ms per second; mean of clean runs</text>
+<line x1='64' x2='530' y1='348.0' y2='348.0' stroke='#e4e3df' stroke-width='1'/>
+<text x='56' y='352.0' font-size='11' fill='#52514e' text-anchor='end'>0</text>
+<line x1='64' x2='530' y1='284.9' y2='284.9' stroke='#e4e3df' stroke-width='1'/>
+<text x='56' y='288.9' font-size='11' fill='#52514e' text-anchor='end'>100</text>
+<line x1='64' x2='530' y1='221.8' y2='221.8' stroke='#e4e3df' stroke-width='1'/>
+<text x='56' y='225.8' font-size='11' fill='#52514e' text-anchor='end'>200</text>
+<line x1='64' x2='530' y1='158.7' y2='158.7' stroke='#e4e3df' stroke-width='1'/>
+<text x='56' y='162.7' font-size='11' fill='#52514e' text-anchor='end'>300</text>
+<line x1='64' x2='530' y1='95.6' y2='95.6' stroke='#e4e3df' stroke-width='1'/>
+<text x='56' y='99.6' font-size='11' fill='#52514e' text-anchor='end'>400</text>
+<text x='78.6' y='366' font-size='11' fill='#52514e' text-anchor='middle'>1x</text>
+<text x='151.4' y='366' font-size='11' fill='#52514e' text-anchor='middle'>1.5x</text>
+<text x='224.2' y='366' font-size='11' fill='#52514e' text-anchor='middle'>2x</text>
+<text x='369.8' y='366' font-size='11' fill='#52514e' text-anchor='middle'>3x</text>
+<text x='515.4' y='366' font-size='11' fill='#52514e' text-anchor='middle'>4x</text>
+<text x='297' y='390' font-size='12' fill='#52514e' text-anchor='middle'>offered load (multiple of measured capacity, 400 req/s)</text>
+<text transform='translate(16,206) rotate(-90)' font-size='12' fill='#52514e' text-anchor='middle'>goodput (req/s)</text>
+<line x1='64' x2='530' y1='95.6' y2='95.6' stroke='#52514e' stroke-width='1' stroke-dasharray='2 3'/>
+<text x='522.7' y='90.6' font-size='11' fill='#52514e' text-anchor='end'>capacity</text>
+<path d='M78.6,126.0 L151.4,137.1 L224.2,164.3 L369.8,155.5 L515.4,154.6' fill='none' stroke='#2a78d6' stroke-width='2' stroke-linejoin='round'><title>LoadControl (all pieces)</title></path>
+<circle cx='78.6' cy='126.0' r='4' fill='#2a78d6' stroke='#fcfcfb' stroke-width='2'><title>LoadControl (all pieces): 352</title></circle>
+<circle cx='151.4' cy='137.1' r='4' fill='#2a78d6' stroke='#fcfcfb' stroke-width='2'><title>LoadControl (all pieces): 334</title></circle>
+<circle cx='224.2' cy='164.3' r='4' fill='#2a78d6' stroke='#fcfcfb' stroke-width='2'><title>LoadControl (all pieces): 291</title></circle>
+<circle cx='369.8' cy='155.5' r='4' fill='#2a78d6' stroke='#fcfcfb' stroke-width='2'><title>LoadControl (all pieces): 305</title></circle>
+<circle cx='515.4' cy='154.6' r='4' fill='#2a78d6' stroke='#fcfcfb' stroke-width='2'><title>LoadControl (all pieces): 306</title></circle>
+<path d='M78.6,111.6 L151.4,178.8 L224.2,108.5 L369.8,138.9 L515.4,133.6' fill='none' stroke='#eb6834' stroke-width='2' stroke-linejoin='round'><title>static concurrency limit (best of sweep)</title></path>
+<circle cx='78.6' cy='111.6' r='4' fill='#eb6834' stroke='#fcfcfb' stroke-width='2'><title>static concurrency limit (best of sweep): 375</title></circle>
+<circle cx='151.4' cy='178.8' r='4' fill='#eb6834' stroke='#fcfcfb' stroke-width='2'><title>static concurrency limit (best of sweep): 268</title></circle>
+<circle cx='224.2' cy='108.5' r='4' fill='#eb6834' stroke='#fcfcfb' stroke-width='2'><title>static concurrency limit (best of sweep): 380</title></circle>
+<circle cx='369.8' cy='138.9' r='4' fill='#eb6834' stroke='#fcfcfb' stroke-width='2'><title>static concurrency limit (best of sweep): 331</title></circle>
+<circle cx='515.4' cy='133.6' r='4' fill='#eb6834' stroke='#fcfcfb' stroke-width='2'><title>static concurrency limit (best of sweep): 340</title></circle>
+<path d='M78.6,132.1 L151.4,199.1 L224.2,137.3 L369.8,166.6 L515.4,156.7' fill='none' stroke='#1baf7a' stroke-width='2' stroke-linejoin='round'><title>Gradient2 limit only</title></path>
+<circle cx='78.6' cy='132.1' r='4' fill='#1baf7a' stroke='#fcfcfb' stroke-width='2'><title>Gradient2 limit only: 342</title></circle>
+<circle cx='151.4' cy='199.1' r='4' fill='#1baf7a' stroke='#fcfcfb' stroke-width='2'><title>Gradient2 limit only: 236</title></circle>
+<circle cx='224.2' cy='137.3' r='4' fill='#1baf7a' stroke='#fcfcfb' stroke-width='2'><title>Gradient2 limit only: 334</title></circle>
+<circle cx='369.8' cy='166.6' r='4' fill='#1baf7a' stroke='#fcfcfb' stroke-width='2'><title>Gradient2 limit only: 287</title></circle>
+<circle cx='515.4' cy='156.7' r='4' fill='#1baf7a' stroke='#fcfcfb' stroke-width='2'><title>Gradient2 limit only: 303</title></circle>
+<path d='M78.6,96.0 L151.4,107.6 L224.2,105.0 L369.8,254.5 L515.4,344.5' fill='none' stroke='#eda100' stroke-width='2' stroke-linejoin='round'><title>static rate limit at capacity</title></path>
+<circle cx='78.6' cy='96.0' r='4' fill='#eda100' stroke='#fcfcfb' stroke-width='2'><title>static rate limit at capacity: 399</title></circle>
+<circle cx='151.4' cy='107.6' r='4' fill='#eda100' stroke='#fcfcfb' stroke-width='2'><title>static rate limit at capacity: 381</title></circle>
+<circle cx='224.2' cy='105.0' r='4' fill='#eda100' stroke='#fcfcfb' stroke-width='2'><title>static rate limit at capacity: 385</title></circle>
+<circle cx='369.8' cy='254.5' r='4' fill='#eda100' stroke='#fcfcfb' stroke-width='2'><title>static rate limit at capacity: 148</title></circle>
+<circle cx='515.4' cy='344.5' r='4' fill='#eda100' stroke='#fcfcfb' stroke-width='2'><title>static rate limit at capacity: 6</title></circle>
+<path d='M78.6,150.2 L151.4,242.7 L224.2,268.6 L369.8,346.3 L515.4,346.9' fill='none' stroke='#e87ba4' stroke-width='2' stroke-linejoin='round'><title>no control</title></path>
+<circle cx='78.6' cy='150.2' r='4' fill='#e87ba4' stroke='#fcfcfb' stroke-width='2'><title>no control: 313</title></circle>
+<circle cx='151.4' cy='242.7' r='4' fill='#e87ba4' stroke='#fcfcfb' stroke-width='2'><title>no control: 167</title></circle>
+<circle cx='224.2' cy='268.6' r='4' fill='#e87ba4' stroke='#fcfcfb' stroke-width='2'><title>no control: 126</title></circle>
+<circle cx='369.8' cy='346.3' r='4' fill='#e87ba4' stroke='#fcfcfb' stroke-width='2'><title>no control: 3</title></circle>
+<circle cx='515.4' cy='346.9' r='4' fill='#e87ba4' stroke='#fcfcfb' stroke-width='2'><title>no control: 2</title></circle>
+<line x1='540' x2='552' y1='133.6' y2='133.6' stroke='#eb6834' stroke-width='3'/>
+<text x='557' y='137.6' font-size='12' fill='#0b0b0b'>static concurrency limit (best of sweep)</text>
+<line x1='540' x2='552' y1='154.6' y2='154.6' stroke='#2a78d6' stroke-width='3'/>
+<text x='557' y='158.6' font-size='12' fill='#0b0b0b'>LoadControl (all pieces)</text>
+<line x1='540' x2='552' y1='170.6' y2='170.6' stroke='#1baf7a' stroke-width='3'/>
+<text x='557' y='174.6' font-size='12' fill='#0b0b0b'>Gradient2 limit only</text>
+<line x1='540' x2='552' y1='344.5' y2='344.5' stroke='#eda100' stroke-width='3'/>
+<text x='557' y='348.5' font-size='12' fill='#0b0b0b'>static rate limit at capacity</text>
+<line x1='540' x2='552' y1='360.5' y2='360.5' stroke='#e87ba4' stroke-width='3'/>
+<text x='557' y='364.5' font-size='12' fill='#0b0b0b'>no control</text>
+</svg>
