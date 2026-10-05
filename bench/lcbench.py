@@ -239,9 +239,18 @@ def tc(dep, args):
     return sh(f"docker run --rm --net container:lchotel-{DEPS[dep]}-1 --cap-add NET_ADMIN loadcontrol/tc {args}", check=False)
 
 
-def reset_faults():
-    for dep in DEPS:
-        tc(dep, "qdisc del dev eth0 root 2>/dev/null")
+NETEM = set()  # dependencies with a netem qdisc applied by this run
+
+
+def reset_faults(all_deps=False):
+    # Clear in parallel so a fault ends when the timeline says it does.
+    deps = list(DEPS) if all_deps else sorted(NETEM)
+    procs = [subprocess.Popen(f"docker run --rm --net container:lchotel-{DEPS[d]}-1 --cap-add NET_ADMIN "
+                              f"loadcontrol/tc qdisc del dev eth0 root", shell=True,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for d in deps]
+    for p in procs:
+        p.wait()
+    NETEM.clear()
     sh("docker rm -f $(docker ps -aq --filter name=lchotel-hog) 2>/dev/null || true", check=False)
 
 
@@ -264,6 +273,7 @@ def apply_fault(spec):
     elif kind == "latency":
         jitter = f" {int(a[2])}ms" if len(a) > 2 else ""
         tc(a[0], f"qdisc replace dev eth0 root netem delay {int(a[1])}ms{jitter}")
+        NETEM.add(a[0])
     elif kind == "clear":
         reset_faults()
         sh("docker rm -f $(docker ps -aq --filter name=lchotel-hog) 2>/dev/null || true", check=False)
@@ -330,7 +340,7 @@ def main():
 
     lock()
     try:
-        reset_faults()
+        reset_faults(all_deps=True)
         if not a.keep:
             reset_db()
             recreate(a.env)

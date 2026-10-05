@@ -19,7 +19,7 @@ tools() {
 up() {
   tools
   python3 "$HERE/gen.py"
-  k3d cluster create lc --servers 1 --agents 0 --no-lb=false \
+  k3d cluster create lc --servers 1 --agents 0 \
     -p "5000:5000@loadbalancer" -p "9090:9090@loadbalancer" \
     --k3s-arg "--disable=traefik@server:0" --k3s-arg "--disable=metrics-server@server:0" --wait
   k3d image import -c lc loadcontrol/hotel:latest hashicorp/consul:1.20 jaegertracing/all-in-one:1.62.0 \
