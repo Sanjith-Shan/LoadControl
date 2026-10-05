@@ -1,0 +1,8 @@
+build/
+*.test
+*.exe
+/bench/work/
+*.prof
+.minipc-busy
+.minipc-runs/
+BUILD_BRIEF*.md
