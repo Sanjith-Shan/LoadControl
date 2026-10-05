@@ -113,6 +113,11 @@ spec:
         - name: memcached-rate
           image: memcached:1.6
           args: [ "-m", "128", "-t", "2" ]
+        - name: tc
+          image: loadcontrol/tc:latest
+          imagePullPolicy: Never
+          command: [ "sleep", "infinity" ]
+          securityContext: { capabilities: { add: [ "NET_ADMIN" ] } }
 ---
 apiVersion: v1
 kind: Service
@@ -138,6 +143,11 @@ spec:
         - name: memcached-profile
           image: memcached:1.6
           args: [ "-m", "128", "-t", "2" ]
+        - name: tc
+          image: loadcontrol/tc:latest
+          imagePullPolicy: Never
+          command: [ "sleep", "infinity" ]
+          securityContext: { capabilities: { add: [ "NET_ADMIN" ] } }
 ---
 apiVersion: v1
 kind: Service
@@ -163,6 +173,11 @@ spec:
         - name: memcached-reserve
           image: memcached:1.6
           args: [ "-m", "128", "-t", "2" ]
+        - name: tc
+          image: loadcontrol/tc:latest
+          imagePullPolicy: Never
+          command: [ "sleep", "infinity" ]
+          securityContext: { capabilities: { add: [ "NET_ADMIN" ] } }
 ---
 apiVersion: v1
 kind: Service
