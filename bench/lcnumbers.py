@@ -38,6 +38,16 @@ def cpu(r):
     return sum(xs) / len(xs) if xs else float("nan")
 
 
+def host_clean(r):
+    L = r["load"]
+    around = any(((L.get(k) or {}).get("windows_cpu_pct") or 0) >= 90 for k in ("before", "after"))
+    mid = ((L.get("mid") or {}).get("windows_cpu_pct") or 0) >= 72
+    hs = L.get("host_cpu_pct_per_2s") or []
+    cont = bool(hs) and sorted(hs)[len(hs) // 2] >= 72
+    peer = any((L.get(k) or {}).get("peer_lock") for k in ("before", "mid", "after"))
+    return not (around or mid or cont or peer)
+
+
 def clean(r):
     """A run is clean if no peer lock was seen, no service restarted, and
     nothing outside the benchmark competed for the host. The WSL VM
@@ -145,21 +155,49 @@ def exp4():
     if not rows:
         return
     print("## exp4 retry amplification during a dependency fault, results/exp4_amplification.jsonl\n")
-    print("Requests reaching each service per user search request, whole run (fault from 10 s to 50 s).\n")
-    print("| run | user attempts/req | frontend->search attempts | search->rate attempts | rate requests per search | clean |")
-    print("|---|---|---|---|---|---|")
+    print("The rate service's cache gets +400 ms (netem) from 10 s to 50 s at 0.3x capacity, so every rate call "
+          "misses its 250 ms per-try timeout. Users retry twice (3 s timeout). Counts are per user search request "
+          "over the whole run, from client-side counters (a service that crashes resets its own counters, so the "
+          "callers' counts are used). Restarts here are an outcome of the storm, not contamination.\n")
+    print("| run | n | user attempts per request | frontend -> search attempts per search | search -> rate attempts per search | rate restarts | host clean |")
+    print("|---|---|---|---|---|---|---|")
+    g = defaultdict(list)
     for r in rows:
-        p = r["prometheus"]
-        inb = p.get("inbound", {})
-        ca = p.get("client_attempts", {})
-        searches = sum(v for k, v in inb.items() if "service=srv-search" in k and "kind=original" in k)
-        rate = sum(v for k, v in inb.items() if "service=srv-rate" in k)
-        fs = sum(v for k, v in ca.items() if "service=frontend" in k and "target=srv-search" in k)
-        sr = sum(v for k, v in ca.items() if "service=srv-search" in k and "target=srv-rate" in k)
-        user_search = 0.6 * r["summary"]["offered"]
+        g[r["name"]].append(r)
+    for name, rs in g.items():
+        vals = []
+        for r in rs:
+            ca = r["prometheus"].get("client_attempts", {})
+            fs = sum(v for k, v in ca.items() if "service=frontend" in k and "target=srv-search" in k)
+            sr = sum(v for k, v in ca.items() if "service=srv-search" in k and "target=srv-rate" in k)
+            n = 0.6 * r["summary"]["offered"]
+            ks = r["summary"].get("kinds_offered", {})
+            if ks.get("search"):
+                n = ks["search"]
+            vals.append((r["summary"]["attempts"] / r["summary"]["offered"], fs / n, sr / n,
+                         (r.get("restarts") or {}).get("rate") or 0, host_clean(r)))
+        m = lambda i: smean(v[i] for v in vals)
+        print(f"| {name} | {len(rs)} | {fmt(m(0), 2)} | {fmt(m(1), 2)} | {fmt(m(2), 2)} | "
+              f"{sum(v[3] for v in vals)} | {sum(v[4] for v in vals)}/{len(vals)} |")
+    print()
+
+
+def exp3_table(file, title, trigger_desc):
+    rows = load(file)
+    if not rows:
+        return
+    print(f"## {title}, results/{file}\n")
+    print(f"{trigger_desc} Recovery = seconds after the trigger is removed until goodput stays at >= 90% of its "
+          "pre-trigger mean (20-30 s) for 10 s; 'never' means not before the run ended.\n")
+    print("| run | pre-trigger goodput | trigger cleared at s | goodput during last 50 s | recovery s | user attempts per request | clean |")
+    print("|---|---|---|---|---|---|---|")
+    for r in rows:
+        off = next((f["t"] for f in r["faults"] if f["fault"] == "clear"), None)
+        rec, base = recovery(r, off=int(round(off)) if off else 50) if r["faults"] else (None, None)
+        late = [s["good"] for s in r["series"] if r["duration_s"] - 50 <= s["t"] < r["duration_s"]]
         att = r["summary"]["attempts"] / max(1, r["summary"]["offered"])
-        print(f"| {r['name']} | {fmt(att, 2)} | {fmt(fs / user_search, 2)} | {fmt(sr / user_search, 2)} | "
-              f"{fmt(rate / user_search, 2)} | {clean(r)} |")
+        recs = "n/a (no trigger)" if not r["faults"] else ("never" if rec is None else str(rec))
+        print(f"| {r['name']} | {fmt(base)} | {fmt(off)} | {fmt(smean(late))} | {recs} | {fmt(att, 2)} | {clean(r)} |")
     print()
 
 
@@ -173,8 +211,12 @@ def main():
     table("exp1_fixedconc_sweep.jsonl", "static concurrency limit sweep at 2x", cap)
     table("exp1_goodput.jsonl", "exp1 goodput under overload", cap)
     table("exp2_priority.jsonl", "exp2 priority at 3x capacity (tiers 20/30/50%)", cap)
-    exp3()
+    exp3_table("exp3_coldcache_only.jsonl", "exp3, first round: cold caches only",
+               "Caches flushed at 30 s; the MongoDB latency this round also asked for never reached the services (BUG_LOG B3).")
+    exp3_table("exp3_metastable.jsonl", "exp3 metastable recovery",
+               "0.7x capacity (280 req/s, ramped over 15 s), users retry 3 times on a 1 s timeout. Trigger from 30 s: caches flushed and 200 ms of netem latency on the three caches (`-memc`), or a CPU-hogging container (`-hog`).")
     exp4()
+    table("exp8_capacity_shift.jsonl", "exp8 capacity shift (a CPU hog from 30 s to 90 s at 0.9x)", cap)
     table("exp5_false_shedding.jsonl", "exp5 shedding below capacity", cap)
     table("exp6_algorithms.jsonl", "exp6 algorithm comparison", cap)
     table("exp7_overhead_e2e.jsonl", "exp7 end-to-end overhead at low load", cap)
