@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"go.uber.org/goleak"
+	"github.com/Sanjith-Shan/LoadControl/internal/leakcheck"
 	"pgregory.net/rapid"
 )
 
-func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
+func TestMain(m *testing.M) { leakcheck.Main(m) }
 
 // drawAlgorithm builds a randomly configured adaptive algorithm and returns
 // its lower and upper bounds.

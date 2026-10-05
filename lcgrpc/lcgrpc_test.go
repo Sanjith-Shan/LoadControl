@@ -8,10 +8,10 @@ import (
 	"time"
 
 	lc "github.com/Sanjith-Shan/LoadControl"
+	"github.com/Sanjith-Shan/LoadControl/internal/leakcheck"
 	"github.com/Sanjith-Shan/LoadControl/limit"
 	"github.com/Sanjith-Shan/LoadControl/priority"
 	"github.com/Sanjith-Shan/LoadControl/retry"
-	"go.uber.org/goleak"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -21,7 +21,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
+func TestMain(m *testing.M) { leakcheck.Main(m) }
 
 // health is the test service: the standard health Check RPC with a
 // pluggable handler body, so tests control latency and errors.

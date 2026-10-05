@@ -159,7 +159,7 @@ samples, the retry budget's bound (`retries <= maxTokens/2 + tokenRatio x
 calls`, derived and checked for any failure pattern), gRPC tests over bufconn
 (shedding, deadline drops before the handler runs, priority across two hops,
 3 attempts per hop giving 27 leaf calls naively and 3 with the one-layer rule),
-HTTP tests, and goroutine-leak checks with goleak. CI also runs them with
+HTTP tests, and goroutine-leak checks (`internal/leakcheck`). CI also runs them with
 `-race`, with more rapid checks, and builds the patched benchmark.
 
 ## Repository
