@@ -263,7 +263,7 @@ def prom_query(q, at):
 
 COUNTERS = {
     "inbound": "sum by (service,kind) (lc_inbound_total)",
-    "server": "sum by (service,outcome) (lc_requests_total)",
+    "server": "sum by (service,tier,outcome) (lc_requests_total)",
     "client_attempts": "sum by (service,target,kind) (lc_client_attempts_total)",
     "client_local": "sum by (service,target,reason) (lc_client_local_total)",
     "client_failures": "sum by (service,target) (lc_client_failures_total)",

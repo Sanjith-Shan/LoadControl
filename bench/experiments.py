@@ -17,8 +17,10 @@ GEN = os.path.join(REPO, "bench", "hotel", "configs", "gen")
 
 # Building blocks. Keys without a service prefix apply to every service.
 DEADLINE = {"LC_DEADLINE": "on", "LC_FRONTEND_DEFAULT_TIMEOUT_MS": "1000"}
-SHARES = {"LC_TIER_SHARES": "1,0.85,0.6"}
-QUEUE = {"LC_QUEUE_WAIT_MS": "5"}
+# Chosen in results/tuning.jsonl (variant C): the least shedding below
+# capacity and the most goodput at 3x of the three settings tried.
+SHARES = {"LC_TIER_SHARES": "1,0.9,0.8"}
+QUEUE = {"LC_QUEUE_WAIT_MS": "20"}
 BUDGET = {"LC_RETRY": "budget", "LC_RETRY_ATTEMPTS": "3", "LC_PER_TRY_TIMEOUT_MS": "250",
           "LC_FRONTEND_PER_TRY_TIMEOUT_MS": "800"}
 NAIVE = {"LC_RETRY": "naive", "LC_RETRY_ATTEMPTS": "3", "LC_PER_TRY_TIMEOUT_MS": "250",
@@ -28,7 +30,7 @@ THROTTLE = {"LC_FRONTEND_THROTTLE": "2", "LC_FRONTEND_THROTTLE_WINDOW_S": "30"}
 
 
 def lim(alg):
-    return {"LC_LIMIT": alg}
+    return {"LC_LIMIT": alg, "LC_LIMIT_MIN": "8"}
 
 
 def merge(*ds):
@@ -108,7 +110,8 @@ def exp2(a):
         "gradient2-notiers": (merge(lim("gradient2"), DEADLINE), "Gradient2 + deadline, tiers ignored"),
         "gradient2-shares": (merge(lim("gradient2"), DEADLINE, SHARES), "Gradient2 + deadline + tier shares"),
         "gradient2-shares-queue": (merge(lim("gradient2"), DEADLINE, SHARES, QUEUE), "Gradient2 + deadline + tier shares + 5 ms priority queue"),
-        "dagor-wait": (merge(lim("gradient2"), DEADLINE, QUEUE, {"LC_DAGOR": "wait"}), "Gradient2 + deadline + DAGOR level on limiter queue wait"),
+        "dagor-wait": (merge(lim("gradient2"), DEADLINE, QUEUE, {"LC_DAGOR": "wait", "LC_DAGOR_THRESHOLD_MS": "5"}), "Gradient2 + deadline + DAGOR level on limiter queue wait (5 ms)"),
+        "full+dagor": (merge(full(), {"LC_DAGOR": "wait", "LC_DAGOR_THRESHOLD_MS": "5"}), "LoadControl, every piece on, plus the DAGOR level"),
         "dagor-sched": (merge(DEADLINE, {"LC_DAGOR": "sched", "LC_DAGOR_THRESHOLD_MS": "2"}), "DAGOR level on Go scheduler latency, no limiter"),
         "full": (full(), "LoadControl, every piece on"),
     })
