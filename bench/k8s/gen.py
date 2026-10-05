@@ -4,10 +4,10 @@ the k3d run uses exactly the same services, images, config and fault
 proxies. Writes bench/k8s/hotel.yaml.
 
 Each Compose service becomes a Deployment and a Service with the same name,
-so config.json, toxiproxy.json and prometheus.yml work unchanged. LC_*
+so config.json and prometheus.yml work unchanged. LC_*
 settings come from the ConfigMap lc-env (bench/k8s/run_k3d.sh replaces it
 per run). Ports that the harness needs are exposed through k3d's load
-balancer: frontend 5000, Prometheus 9090, Toxiproxy 8474.
+balancer: frontend 5000 and Prometheus 9090.
 """
 import os
 import re
@@ -17,7 +17,7 @@ HOTEL = os.path.join(HERE, "..", "hotel")
 
 HOTEL_SVCS = {"frontend": 5000, "search": 8082, "geo": 8083, "rate": 8084, "profile": 8081,
               "recommendation": 8085, "user": 8086, "reservation": 8087}
-EXPOSED = {"frontend": 5000, "prometheus": 9090, "toxiproxy": 8474}
+EXPOSED = {"frontend": 5000, "prometheus": 9090}
 
 
 def deployment(name, container):
@@ -62,7 +62,7 @@ def hotel(name, port):
             - {{ name: JAEGER_SAMPLE_RATIO, value: "0.01" }}
             - {{ name: LOG_LEVEL, value: error }}
             - {{ name: MEMC_TIMEOUT, value: "10" }}
-          volumeMounts: [ {{ name: cfg, mountPath: /config.json, subPath: config.json }} ]
+          volumeMounts: [ {{ name: cfg, mountPath: /workspace/config.json, subPath: config.json }} ]
       volumes: [ {{ name: cfg, configMap: {{ name: hotel-config }} }} ]"""
     return deployment(name, c) + "---\n" + service(name, [port, 9100], lb=name in EXPOSED)
 
@@ -83,7 +83,6 @@ def main():
     docs = []
     read = lambda f: open(os.path.join(HOTEL, f)).read()
     docs.append(configmap("hotel-config", {"config.json": read("config.json")}))
-    docs.append(configmap("toxiproxy-config", {"toxiproxy.json": read("toxiproxy.json")}))
     docs.append(configmap("prometheus-config", {"prometheus.yml": read("prometheus.yml")}))
     docs.append("apiVersion: v1\nkind: ConfigMap\nmetadata: { name: lc-env }\ndata: {}\n")
     docs.append(simple("consul", "hashicorp/consul:1.20", [8500, 8600]))
@@ -92,11 +91,6 @@ def main():
         docs.append(simple(f"memcached-{m}", "memcached:1.6", [11211], '[ "-m", "128", "-t", "2" ]'))
     for m in ["geo", "profile", "rate", "recommendation", "reservation", "user"]:
         docs.append(simple(f"mongodb-{m}", "mongo:5.0", [27017], '[ "--wiredTigerCacheSizeGB", "0.25", "--quiet" ]'))
-    tox_mount = """
-          volumeMounts: [ { name: cfg, mountPath: /toxiproxy.json, subPath: toxiproxy.json } ]
-      volumes: [ { name: cfg, configMap: { name: toxiproxy-config } } ]"""
-    docs.append(simple("toxiproxy", "ghcr.io/shopify/toxiproxy:2.9.0", [8474, 27011, 27012, 27013, 11211, 11212, 11213],
-                       '[ "-host=0.0.0.0", "-config=/toxiproxy.json" ]', tox_mount))
     prom_mount = """
           volumeMounts: [ { name: cfg, mountPath: /etc/prometheus/prometheus.yml, subPath: prometheus.yml } ]
       volumes: [ { name: cfg, configMap: { name: prometheus-config } } ]"""

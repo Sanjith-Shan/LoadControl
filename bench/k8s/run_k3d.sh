@@ -20,10 +20,10 @@ up() {
   tools
   python3 "$HERE/gen.py"
   k3d cluster create lc --servers 1 --agents 0 --no-lb=false \
-    -p "5000:5000@loadbalancer" -p "9090:9090@loadbalancer" -p "8474:8474@loadbalancer" \
+    -p "5000:5000@loadbalancer" -p "9090:9090@loadbalancer" \
     --k3s-arg "--disable=traefik@server:0" --k3s-arg "--disable=metrics-server@server:0" --wait
   k3d image import -c lc loadcontrol/hotel:latest hashicorp/consul:1.20 jaegertracing/all-in-one:1.62.0 \
-    memcached:1.6 mongo:5.0 ghcr.io/shopify/toxiproxy:2.9.0 prom/prometheus:v3.0.1
+    memcached:1.6 mongo:5.0 prom/prometheus:v3.0.1
   kubectl apply -f "$HERE/hotel.yaml"
   kubectl wait --for=condition=available deploy --all --timeout=300s
 }

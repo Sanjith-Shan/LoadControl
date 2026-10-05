@@ -131,8 +131,9 @@ discovery, Jaeger for traces. `bench/hotel/apply_patch.sh` adds one package
 becomes a chain (tracing, then LoadControl), the shared dialer chains the
 LoadControl client interceptor, and the frontend's mux is wrapped in the HTTP
 middleware. The generated diff is `bench/hotel/loadcontrol.patch`.
-Application code is not changed. Toxiproxy sits in front of the rate,
-profile and reservation databases and caches for fault injection.
+Application code is not changed. Faults are injected with `tc netem` on
+the cache and database containers, cache flushes, and a CPU-hogging
+container.
 
 Load is open loop. `cmd/loadgen` sends the benchmark's own request mix (from
 its wrk2 script) on a fixed schedule and measures latency from each request's

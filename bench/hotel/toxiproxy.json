@@ -1,8 +1,0 @@
-[
-  {"name": "mongo-rate", "listen": "0.0.0.0:27011", "upstream": "mongodb-rate:27017", "enabled": true},
-  {"name": "mongo-profile", "listen": "0.0.0.0:27012", "upstream": "mongodb-profile:27017", "enabled": true},
-  {"name": "mongo-reservation", "listen": "0.0.0.0:27013", "upstream": "mongodb-reservation:27017", "enabled": true},
-  {"name": "memc-rate", "listen": "0.0.0.0:11211", "upstream": "memcached-rate:11211", "enabled": true},
-  {"name": "memc-profile", "listen": "0.0.0.0:11212", "upstream": "memcached-profile:11211", "enabled": true},
-  {"name": "memc-reserve", "listen": "0.0.0.0:11213", "upstream": "memcached-reserve:11211", "enabled": true}
-]

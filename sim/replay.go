@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strings"
 	"time"
 )
@@ -35,9 +36,12 @@ type Record struct {
 		T    int   `json:"t"`
 		Good int64 `json:"good"`
 	} `json:"series"`
-	Note     string                                 `json:"note"`
-	Restarts map[string]*int                        `json:"restarts"`
-	Load     struct{ Before, Mid, After *hostLoad } `json:"load"`
+	Note     string          `json:"note"`
+	Restarts map[string]*int `json:"restarts"`
+	Load     struct {
+		Before, Mid, After *hostLoad
+		HostCPU            []float64 `json:"host_cpu_pct_per_2s"`
+	} `json:"load"`
 }
 
 type hostLoad struct {
@@ -45,10 +49,11 @@ type hostLoad struct {
 	PeerLock   *string  `json:"peer_lock"`
 }
 
-// Dirty mirrors bench/numbers.py clean(): a run is contaminated if a peer
-// lock was seen, a service restarted, or the host was saturated by
-// something else just before or after it (Windows CPU >= 90%). It returns
-// the reason, or "" for a clean run.
+// Dirty mirrors bench/lcnumbers.py clean(): a run is contaminated if a peer
+// lock was seen, a service restarted, the host was saturated just before or
+// after it (Windows CPU >= 90%), or something else took a core during it
+// (mid-run sample or median of the continuous samples >= 72%; the VM alone
+// shows 55-65%). It returns the reason, or "" for a clean run.
 func (r *Record) Dirty() string {
 	L := map[string]*hostLoad{"before": r.Load.Before, "mid": r.Load.Mid, "after": r.Load.After}
 	for _, k := range []string{"before", "mid", "after"} {
@@ -64,6 +69,16 @@ func (r *Record) Dirty() string {
 	for _, k := range []string{"before", "after"} {
 		if l := L[k]; l != nil && l.WindowsCPU != nil && *l.WindowsCPU >= 90 {
 			return fmt.Sprintf("host CPU %.0f%% %s", *l.WindowsCPU, k)
+		}
+	}
+	if l := r.Load.Mid; l != nil && l.WindowsCPU != nil && *l.WindowsCPU >= 72 {
+		return fmt.Sprintf("host CPU %.0f%% mid-run", *l.WindowsCPU)
+	}
+	if hs := r.Load.HostCPU; len(hs) > 0 {
+		c := append([]float64(nil), hs...)
+		sort.Float64s(c)
+		if c[len(c)/2] >= 72 {
+			return fmt.Sprintf("host CPU median %.0f%% during run", c[len(c)/2])
 		}
 	}
 	return ""
@@ -135,7 +150,7 @@ func ReplayParams(base *Params, r *Record) (*Params, error) {
 	return p, nil
 }
 
-// RecoveryS is bench/numbers.py's recovery(): seconds after the trigger is
+// RecoveryS is bench/lcnumbers.py's recovery(): seconds after the trigger is
 // removed (off) until goodput per completion second stays at >= frac of
 // its mean over [baseFrom, on) for hold seconds; nil if it never does.
 func RecoveryS(good map[int]int64, duration int) *int {
@@ -165,7 +180,7 @@ type Comparison struct {
 	File         string   `json:"file"`
 	Time         string   `json:"time"`
 	Faults       int      `json:"faults"`
-	Contaminated string   `json:"contaminated,omitempty"` // why the run is excluded from error stats (bench/numbers.py clean())
+	Contaminated string   `json:"contaminated,omitempty"` // why the run is excluded from error stats (bench/lcnumbers.py clean())
 	Unsupported  []string `json:"unsupported,omitempty"`
 	Measured     Outcome  `json:"measured"`
 	Sim          Outcome  `json:"sim"`

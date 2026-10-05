@@ -1,6 +1,6 @@
 # hotelReservation (DeathStarBench, pinned commit 6ecb097) with LoadControl,
-# Toxiproxy in front of the rate/profile/reservation databases and caches,
-# Prometheus, Grafana and Jaeger. review and attractions are left out: the
+# Prometheus, Grafana and Jaeger. Faults are injected with tc netem on the
+# cache and database containers (bench/lcbench.py). review and attractions are left out: the
 # benchmark's mixed workload never calls them.
 name: lchotel
 services:
@@ -11,13 +11,6 @@ services:
     image: jaegertracing/all-in-one:1.62.0
     ports: [ "16686:16686" ]
     restart: always
-  toxiproxy:
-    image: ghcr.io/shopify/toxiproxy:2.9.0
-    command: [ "-host=0.0.0.0", "-config=/toxiproxy.json" ]
-    volumes: [ "./toxiproxy.json:/toxiproxy.json:ro" ]
-    ports: [ "8474:8474" ]
-    depends_on: [ mongodb-rate, mongodb-profile, mongodb-reservation, memcached-rate, memcached-profile, memcached-reserve ]
-    restart: always
   frontend:
     env_file: [ "${LC_ENV:-./configs/off.env}" ]
     environment:
@@ -25,7 +18,7 @@ services:
       - JAEGER_SAMPLE_RATIO=0.01
       - LOG_LEVEL=error
       - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
-    configs: [ { source: server_config, target: /config.json } ]
+    configs: [ { source: server_config, target: /workspace/config.json } ]
     image: loadcontrol/hotel:latest
     entrypoint: frontend
     restart: always
@@ -38,7 +31,7 @@ services:
       - JAEGER_SAMPLE_RATIO=0.01
       - LOG_LEVEL=error
       - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
-    configs: [ { source: server_config, target: /config.json } ]
+    configs: [ { source: server_config, target: /workspace/config.json } ]
     image: loadcontrol/hotel:latest
     entrypoint: search
     restart: always
@@ -50,7 +43,7 @@ services:
       - JAEGER_SAMPLE_RATIO=0.01
       - LOG_LEVEL=error
       - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
-    configs: [ { source: server_config, target: /config.json } ]
+    configs: [ { source: server_config, target: /workspace/config.json } ]
     image: loadcontrol/hotel:latest
     entrypoint: geo
     restart: always
@@ -62,11 +55,11 @@ services:
       - JAEGER_SAMPLE_RATIO=0.01
       - LOG_LEVEL=error
       - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
-    configs: [ { source: server_config, target: /config.json } ]
+    configs: [ { source: server_config, target: /workspace/config.json } ]
     image: loadcontrol/hotel:latest
     entrypoint: rate
     restart: always
-    depends_on: [ toxiproxy, consul ]
+    depends_on: [ mongodb-rate, memcached-rate, consul ]
   profile:
     env_file: [ "${LC_ENV:-./configs/off.env}" ]
     environment:
@@ -74,11 +67,11 @@ services:
       - JAEGER_SAMPLE_RATIO=0.01
       - LOG_LEVEL=error
       - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
-    configs: [ { source: server_config, target: /config.json } ]
+    configs: [ { source: server_config, target: /workspace/config.json } ]
     image: loadcontrol/hotel:latest
     entrypoint: profile
     restart: always
-    depends_on: [ toxiproxy, consul ]
+    depends_on: [ mongodb-profile, memcached-profile, consul ]
   recommendation:
     env_file: [ "${LC_ENV:-./configs/off.env}" ]
     environment:
@@ -86,7 +79,7 @@ services:
       - JAEGER_SAMPLE_RATIO=0.01
       - LOG_LEVEL=error
       - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
-    configs: [ { source: server_config, target: /config.json } ]
+    configs: [ { source: server_config, target: /workspace/config.json } ]
     image: loadcontrol/hotel:latest
     entrypoint: recommendation
     restart: always
@@ -98,7 +91,7 @@ services:
       - JAEGER_SAMPLE_RATIO=0.01
       - LOG_LEVEL=error
       - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
-    configs: [ { source: server_config, target: /config.json } ]
+    configs: [ { source: server_config, target: /workspace/config.json } ]
     image: loadcontrol/hotel:latest
     entrypoint: user
     restart: always
@@ -110,11 +103,11 @@ services:
       - JAEGER_SAMPLE_RATIO=0.01
       - LOG_LEVEL=error
       - MEMC_TIMEOUT=${MEMC_TIMEOUT:-10}
-    configs: [ { source: server_config, target: /config.json } ]
+    configs: [ { source: server_config, target: /workspace/config.json } ]
     image: loadcontrol/hotel:latest
     entrypoint: reservation
     restart: always
-    depends_on: [ toxiproxy, consul ]
+    depends_on: [ mongodb-reservation, memcached-reserve, consul ]
   memcached-rate:
     image: memcached:1.6
     command: [ "memcached", "-m", "128", "-t", "2" ]

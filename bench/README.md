@@ -27,9 +27,7 @@ cd bench/hotel && docker compose up -d
 ```
 
 hotelReservation (frontend, search, geo, rate, profile, recommendation, user,
-reservation), their memcached and MongoDB, Consul, Jaeger (UI on 16686),
-Toxiproxy in front of the rate, profile and reservation databases and caches
-(API on 8474), Prometheus (9090, 1 s scrapes) and Grafana (3000, dashboard
+reservation), their memcached and MongoDB, Consul, Jaeger (UI on 16686), Prometheus (9090, 1 s scrapes) and Grafana (3000, dashboard
 "LoadControl"). Review and attractions are left out because the benchmark's
 mixed workload never calls them.
 
@@ -61,8 +59,8 @@ Per run, `lcbench.py`:
 5. records the machine and the load (load average, busy processes, other
    containers, the peer's lock, Windows CPU) before, in the middle of and
    after the run, and the VM's CPU use every second,
-6. runs `loadgen` open loop and applies the fault timeline (Toxiproxy
-   latency, cache flushes),
+6. runs `loadgen` open loop and applies the fault timeline (netem
+   latency, cache flushes, a CPU hog),
 7. snapshots LoadControl's Prometheus counters before and after, and
 8. appends one JSON line with all of it to the results file.
 
@@ -71,10 +69,14 @@ Per run, `lcbench.py`:
 | Spec | Effect |
 |---|---|
 | `flush:rate` (`profile`, `reserve`) | memcached `flush_all`: the cold-cache trigger |
-| `latency:mongo-rate:100` | Toxiproxy adds 100 ms to every response from the rate database |
-| `latency:memc-rate:400` | same for the rate cache |
-| `down:<proxy>` / `up:<proxy>` | cut or restore a dependency |
-| `clear` | remove every toxic |
+| `latency:memc-rate:200` | `tc netem` adds 200 ms to everything the rate cache sends (`mongo-rate`, `memc-profile`, ... likewise) |
+| `hog:1` | a busy-loop container: a noisy neighbour takes one of the two vCPUs |
+| `clear` | remove every fault |
+
+Faults run in the target container's network namespace from a small `tc`
+image (`bench/tc`), so nothing sits in the data path outside a fault window.
+(An earlier version used Toxiproxy, which the benchmark never actually
+connected through; see BUG_LOG B3.)
 
 ## Kubernetes
 

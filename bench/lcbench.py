@@ -33,7 +33,6 @@ ME = "loadcontrol"
 PROM = "http://localhost:9090"
 PLATFORM = os.environ.get("LC_PLATFORM", "compose")  # compose | k8s
 KUBECTL = os.environ.get("KUBECTL", "kubectl")
-TOXI = "http://localhost:8474"
 
 
 def sh(cmd, check=True, capture=True, env=None):
@@ -229,15 +228,21 @@ def healthy(n=5, timeout=120):
     return False
 
 
+DEPS = {"memc-rate": "memcached-rate", "memc-profile": "memcached-profile", "memc-reserve": "memcached-reserve",
+        "mongo-rate": "mongodb-rate", "mongo-profile": "mongodb-profile", "mongo-reservation": "mongodb-reservation",
+        "mongo-geo": "mongodb-geo", "mongo-user": "mongodb-user", "mongo-recommendation": "mongodb-recommendation"}
+
+
+def tc(dep, args):
+    """Runs tc in the dependency container's network namespace (netem adds
+    the delay to everything it sends, i.e. to its responses)."""
+    return sh(f"docker run --rm --net container:lchotel-{DEPS[dep]}-1 --cap-add NET_ADMIN loadcontrol/tc {args}", check=False)
+
+
 def reset_faults():
-    try:
-        for p in json.loads(http("GET", f"{TOXI}/proxies")).values():
-            for t in p.get("toxics", []):
-                http("DELETE", f"{TOXI}/proxies/{p['name']}/toxics/{t['name']}")
-            if not p.get("enabled", True):
-                http("POST", f"{TOXI}/proxies/{p['name']}", {"enabled": True})
-    except Exception as e:
-        print("toxiproxy reset:", e, file=sys.stderr)
+    for dep in DEPS:
+        tc(dep, "qdisc del dev eth0 root 2>/dev/null")
+    sh("docker rm -f $(docker ps -aq --filter name=lchotel-hog) 2>/dev/null || true", check=False)
 
 
 def flush(cache):
@@ -249,19 +254,16 @@ def flush(cache):
 
 
 def apply_fault(spec):
-    """Fault specs: flush:<rate|profile|reserve>, latency:<proxy>:<ms>[:<jitter>],
-    down:<proxy>, up:<proxy>, clear, cpu:<container>:<cpus> (docker update)."""
+    """Fault specs: flush:<rate|profile|reserve> (memcached flush_all),
+    latency:<dependency>:<ms>[:<jitter>] (tc netem on that container, e.g.
+    memc-rate or mongo-profile), hog:<n> (busy-loop containers), clear,
+    cpu:<service>:<cpus> (docker update)."""
     kind, *a = spec.split(":")
     if kind == "flush":
         flush(a[0])
     elif kind == "latency":
-        jitter = int(a[2]) if len(a) > 2 else 0
-        http("POST", f"{TOXI}/proxies/{a[0]}/toxics", {"name": f"lat_{a[0]}", "type": "latency", "stream": "downstream",
-                                                       "attributes": {"latency": int(a[1]), "jitter": jitter}})
-    elif kind == "down":
-        http("POST", f"{TOXI}/proxies/{a[0]}", {"enabled": False})
-    elif kind == "up":
-        http("POST", f"{TOXI}/proxies/{a[0]}", {"enabled": True})
+        jitter = f" {int(a[2])}ms" if len(a) > 2 else ""
+        tc(a[0], f"qdisc replace dev eth0 root netem delay {int(a[1])}ms{jitter}")
     elif kind == "clear":
         reset_faults()
         sh("docker rm -f $(docker ps -aq --filter name=lchotel-hog) 2>/dev/null || true", check=False)
